@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fava.core.metadata_schema import field_value
+from fava.core.metadata_schema import parse_schema
+from fava.core.metadata_schema import validate_value
 from fava.core.module_base import FavaModule
 from fava.util.date import END_OF_YEAR
 from fava.util.ranking import ExponentialDecayRanker
@@ -67,9 +70,14 @@ class AttributesModule(FavaModule):
         self.links: Sequence[str] = []
         self.tags: Sequence[str] = []
         self.years: Sequence[str] = []
+        self.metadata_values: dict[str, list[str]] = {}
+        self.metadata_records: list[dict[str, str]] = []
+        self.metadata_schema = []
+        self.metadata_issues: list[str] = []
 
     def load_file(self) -> None:  # noqa: D102
         all_entries = self.ledger.all_entries
+        self.load_metadata()
 
         all_links = set()
         all_tags = set()
@@ -106,6 +114,49 @@ class AttributesModule(FavaModule):
         self.accounts = account_ranker.sort()
         self.currencies = currency_ranker.sort()
         self.payees = payee_ranker.sort()
+
+    def load_metadata(self) -> None:
+        """Discover and validate schema-defined metadata independently."""
+        self.metadata_schema, self.metadata_issues = parse_schema(
+            self.ledger.fava_options.metadata_schema,
+            self.ledger.fava_options.filter_metadata,
+        )
+        values: dict[str, set[str]] = {
+            f["key"]: set() for f in self.metadata_schema
+        }
+        combinations: set[tuple[tuple[str, str], ...]] = set()
+        for txn in self.ledger.all_entries_by_type.Transaction:
+            row: dict[str, str] = {}
+            for field in self.metadata_schema:
+                targets = []
+                if field["scope"] in {"transaction", "both"}:
+                    targets.append(("transaction", txn.meta or {}))
+                if field["scope"] in {"posting", "both"}:
+                    targets.extend(
+                        (f"posting {p.account}", p.meta or {})
+                        for p in txn.postings
+                    )
+                for scope, meta in targets:
+                    value = field_value(field, meta)
+                    issue = validate_value(field, value)
+                    if issue:
+                        self.metadata_issues.append(
+                            f"{txn.date} {scope} {field['key']}: {issue}"
+                        )
+                    # Posting dimensions must not select a pooled journal.
+                    if (
+                        scope == "transaction"
+                        and isinstance(value, str)
+                        and value
+                    ):
+                        values[field["key"]].add(value)
+                        row[field["key"]] = value
+            if row:
+                combinations.add(tuple(sorted(row.items())))
+        self.metadata_records = [dict(row) for row in sorted(combinations)]
+        self.metadata_values = {
+            key: sorted(items) for key, items in values.items() if items
+        }
 
     def payee_accounts(self, payee: str) -> Sequence[str]:
         """Rank accounts for the given payee."""

@@ -4,7 +4,7 @@ svg text {
 }
 
 .tooltip {
-  position: absolute;
+  position: fixed;
   z-index: var(--z-index-floating-ui);
   min-width: 5em;
   padding: 0.5em;
@@ -15,19 +15,9 @@ svg text {
   border: 1px solid var(--border);
   box-shadow: var(--box-shadow-button);
   opacity: 0;
-  transform: translate(-50%, calc(-10px - 100%));
-
-  &::before {
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    width: 0;
-    height: 0;
-    margin-left: -10px;
-    content: "";
-    border: 10px solid transparent;
-    border-top-color: var(--border);
-  }
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow: auto;
 
   em {
     display: block;
@@ -35,4 +25,45 @@ svg text {
     font-family: var(--font-family);
     color: var(--text-color-lightest);
   }
+}
+
+.echarts-interval-tooltip {
+  max-width: min(340px, calc(100vw - 56px));
+  max-height: min(270px, calc(100vh - 120px));
+  overflow-y: auto;
+  font-family: var(--font-family);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+}
+.echarts-interval-tooltip table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.echarts-interval-tooltip td {
+  padding: 2px 4px;
+}
+.echarts-interval-tooltip td:first-child {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.echarts-interval-tooltip td:last-child {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.echarts-interval-tooltip .currency {
+  color: var(--text-color-lightest);
+  padding-top: 5px;
+}
+.echarts-interval-tooltip .net {
+  border-top: 1px solid var(--border);
+  font-weight: bold;
+}
+.echarts-interval-tooltip .swatch {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 5px;
 }

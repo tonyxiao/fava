@@ -782,6 +782,7 @@
     "currency_column": 61,
     "default_file": null,
     "default_page": "income_statement/",
+    "filter_metadata": "property,unit,ownership_scope,platform,event_type,estimate_status",
     "fiscal_year_end": { "day": 31, "month": 12 },
     "import_config": null,
     "import_dirs": [],
@@ -791,6 +792,7 @@
     "invert_income_liabilities_equity": false,
     "language": null,
     "locale": null,
+    "metadata_schema": "",
     "show_accounts_with_zero_balance": false,
     "show_accounts_with_zero_transactions": true,
     "show_closed_accounts": false,
@@ -803,6 +805,71 @@
   "have_excel": true,
   "incognito": false,
   "links": ["test-link"],
+  "metadata_issues": [],
+  "metadata_records": [],
+  "metadata_schema": [
+    {
+      "key": "property",
+      "label": "property",
+      "required": false,
+      "scope": "transaction",
+      "separator": "/",
+      "sources": ["property"],
+      "type": "string",
+      "values": []
+    },
+    {
+      "key": "unit",
+      "label": "unit",
+      "required": false,
+      "scope": "transaction",
+      "separator": "/",
+      "sources": ["unit"],
+      "type": "string",
+      "values": []
+    },
+    {
+      "key": "ownership_scope",
+      "label": "ownership scope",
+      "required": false,
+      "scope": "transaction",
+      "separator": "/",
+      "sources": ["ownership_scope"],
+      "type": "string",
+      "values": []
+    },
+    {
+      "key": "platform",
+      "label": "platform",
+      "required": false,
+      "scope": "transaction",
+      "separator": "/",
+      "sources": ["platform"],
+      "type": "string",
+      "values": []
+    },
+    {
+      "key": "event_type",
+      "label": "event type",
+      "required": false,
+      "scope": "transaction",
+      "separator": "/",
+      "sources": ["event_type"],
+      "type": "string",
+      "values": []
+    },
+    {
+      "key": "estimate_status",
+      "label": "estimate status",
+      "required": false,
+      "scope": "transaction",
+      "separator": "/",
+      "sources": ["estimate_status"],
+      "type": "string",
+      "values": []
+    }
+  ],
+  "metadata_values": {},
   "options": {
     "documents": [],
     "filename": "TEST_DATA_DIR/long-example.beancount",

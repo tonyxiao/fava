@@ -48,6 +48,7 @@ export type AccountDetail = ValidationT<typeof account_detail>;
 /** Validator for the Fava options that are used in the frontend. */
 const fava_options = object({
   auto_reload: boolean,
+  filter_metadata: string,
   currency_column: number,
   conversion_currencies: array(string),
   collapse_pattern: array(string),
@@ -103,6 +104,21 @@ export const ledgerDataValidator = object({
   options,
   other_ledgers: array(tuple(string, string)),
   payees: array(string),
+  metadata_values: record(array(string)),
+  metadata_records: array(record(string)),
+  metadata_schema: array(
+    object({
+      key: string,
+      label: string,
+      type: string,
+      scope: string,
+      sources: array(string),
+      values: array(string),
+      separator: string,
+      required: boolean,
+    }),
+  ),
+  metadata_issues: array(string),
   precisions: record(number),
   sidebar_links: array(tuple(string, string)),
   tags: array(string),

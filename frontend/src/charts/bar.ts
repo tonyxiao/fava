@@ -94,24 +94,16 @@ export class BarChart {
     return this.accounts.length > 1;
   }
 
-  /** The tooltip for a hovered account in the stacked bar chart. */
-  tooltip_text_account(
-    $ctx: FormatterContext,
-    d: BarChartDatum,
-    account: string,
-    $chart_toggled_currencies: readonly string[],
-  ): TooltipContent {
-    const content = [];
-    content.push(domHelpers.em(account));
-    d.values.forEach(({ currency }) => {
-      if (!$chart_toggled_currencies.includes(currency)) {
-        const value = d.account_balances[account]?.[currency] ?? 0;
-        content.push($ctx.amount(value, currency));
-        content.push(domHelpers.br());
-      }
-    });
-    content.push(domHelpers.em(d.label));
-    return content;
+  /** Every series and net for the visible currencies in an interval. */
+  interval_summary(d: BarChartDatum) {
+    return d.values.map(({ currency, value }) => ({
+      currency,
+      net: value,
+      series: this.accounts.map((account) => ({
+        account,
+        value: d.account_balances[account]?.[currency] ?? 0,
+      })),
+    }));
   }
 
   /** The tooltip for a hovered bar group in the bar chart. */

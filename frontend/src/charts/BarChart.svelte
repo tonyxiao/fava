@@ -1,208 +1,193 @@
 <script lang="ts">
-  import { extent, least } from "d3-array";
-  import { axisBottom, axisLeft } from "d3-axis";
-  import { scaleBand, scaleLinear, scaleOrdinal } from "d3-scale";
-
+  import { onMount } from "svelte";
+  import type { EChartsType } from "echarts/core";
+  import { scaleOrdinal } from "d3-scale";
+  import { router } from "../router.ts";
   import { url_for_account } from "../helpers.ts";
   import { bar_chart_mode, chart_toggled_currencies } from "../stores/chart.ts";
+  import { color_scheme } from "../stores/color_scheme.ts";
   import {
     ctx,
     current_time_filter_date_format,
     short,
   } from "../stores/format.ts";
-  import Axis from "./Axis.svelte";
-  import Brush from "./Brush.svelte";
   import type { BarChart } from "./bar.ts";
-  import { get_chart_tooltip } from "./context.ts";
-  import {
-    currencies_scale,
-    filter_ticks,
-    hcl_color_range,
-    include_zero,
-    pad_extent,
-    url_for_time_filter,
-  } from "./helpers.ts";
+  import { currencies_scale, hcl_color_range } from "./helpers.ts";
+  import { interval_options } from "./interval_options.ts";
 
   interface Props {
     chart: BarChart;
     width: number;
   }
-
   let { chart, width }: Props = $props();
-
-  const today = new Date();
-  const tooltip = get_chart_tooltip();
-
-  // Constant dimensions
-  const max_column_width = 100;
-  const margin = { top: 10, right: 10, bottom: 30, left: 40 };
-  const height = 250;
-  const inner_height = height - margin.top - margin.bottom;
-
-  // Chart data
-  let accounts = $derived(chart.accounts);
-  let { currencies, bar_groups, stacks } = $derived(
-    chart.filter($chart_toggled_currencies),
+  let host: HTMLDivElement;
+  let instance = $state.raw<EChartsType>();
+  let load_error = $state("");
+  let system_theme = $state(0);
+  let selecting = $state(false);
+  let stacked = $derived($bar_chart_mode === "stacked" && chart.hasStackedData);
+  let color = $derived(
+    scaleOrdinal(hcl_color_range(chart.accounts.length)).domain(chart.accounts),
   );
 
-  // Computed dimensions
-  let max_width = $derived(bar_groups.length * max_column_width);
-  let offset = $derived(margin.left + Math.max(0, width - max_width) / 2);
-  let inner_width = $derived(
-    Math.min(width - margin.left - margin.right, max_width),
-  );
+  onMount(() => {
+    let disposed = false;
+    const media = matchMedia("(prefers-color-scheme: dark)");
+    const refresh = () => {
+      system_theme++;
+    };
+    media.addEventListener("change", refresh);
+    void import("./echarts_runtime.ts")
+      .then(({ init }) => {
+        if (disposed) return;
+        const engine = init(host, undefined, { renderer: "svg" });
+        engine.on("click", (params: unknown) => {
+          if (!params || typeof params !== "object") return;
+          if (
+            "componentType" in params &&
+            params.componentType === "xAxis" &&
+            "value" in params
+          ) {
+            const group = chart
+              .filter($chart_toggled_currencies)
+              .bar_groups.find((g) => g.label === params.value);
+            if (group)
+              router.set_search_param(
+                "time",
+                $current_time_filter_date_format(group.date),
+              );
+          } else if (
+            "seriesName" in params &&
+            typeof params.seriesName === "string" &&
+            chart.accounts.includes(params.seriesName)
+          ) {
+            router.navigate($url_for_account(params.seriesName));
+          }
+        });
+        engine.on("brushEnd", (params: unknown) => {
+          if (
+            !params ||
+            typeof params !== "object" ||
+            !("areas" in params) ||
+            !Array.isArray(params.areas)
+          )
+            return;
+          const range: unknown = params.areas[0]?.coordRange;
+          if (
+            !Array.isArray(range) ||
+            range.length !== 2 ||
+            !range.every((v) => typeof v === "number")
+          )
+            return;
+          const groups = chart.filter($chart_toggled_currencies).bar_groups;
+          const from = groups[Math.max(0, Math.round(Math.min(...range)))];
+          const to =
+            groups[Math.min(groups.length - 1, Math.round(Math.max(...range)))];
+          if (from && to) {
+            const start = $current_time_filter_date_format(from.date),
+              end = $current_time_filter_date_format(to.date);
+            selecting = false;
+            router.set_search_param(
+              "time",
+              start === end ? start : `${start} - ${end}`,
+            );
+          }
+        });
+        instance = engine;
+      })
+      .catch((error: unknown) => {
+        load_error =
+          error instanceof Error ? error.message : "Unable to load chart";
+      });
+    return () => {
+      disposed = true;
+      media.removeEventListener("change", refresh);
+      instance?.dispose();
+    };
+  });
 
-  /** Whether to display stacked bars. */
-  let show_stacked_bars = $derived(
-    $bar_chart_mode === "stacked" && chart.hasStackedData,
-  );
-
-  // Scales
-  let x0 = $derived(
-    scaleBand([0, inner_width])
-      .domain(bar_groups.map((d) => d.label))
-      .padding(0.1),
-  );
-  let x1 = $derived(scaleBand([0, x0.bandwidth()]).domain(currencies));
-
-  let y_extent = $derived(
-    show_stacked_bars
-      ? extent(stacks.flatMap(([, s]) => s.flat(2)))
-      : extent(
-          bar_groups.flatMap((d) => d.values),
-          (d) => d.value,
-        ),
-  );
-  let y = $derived(
-    scaleLinear([inner_height, 0]).domain(pad_extent(include_zero(y_extent))),
-  );
-
-  let account_color_scale = $derived(
-    scaleOrdinal(hcl_color_range(accounts.length)).domain(accounts),
-  );
-
-  // Axes
-  let x_axis = $derived(
-    axisBottom(x0)
-      .tickSizeOuter(0)
-      .tickValues(filter_ticks(x0.domain(), inner_width / 70)),
-  );
-  let y_axis = $derived(
-    axisLeft(y).tickPadding(6).tickSize(-inner_width).tickFormat($short),
-  );
-
-  /** Invert a pixel x position to the date of the nearest bar group. */
-  function invert(px: number): Date {
-    const half = x0.bandwidth() / 2;
-    const closest = least(bar_groups, ({ label }) =>
-      Math.abs(px - (x0(label) ?? 0) - half),
+  $effect(() => {
+    void width;
+    void $color_scheme;
+    void system_theme;
+    if (!instance) return;
+    const styles = getComputedStyle(host);
+    instance.setOption(
+      interval_options(
+        chart,
+        $chart_toggled_currencies,
+        stacked,
+        $ctx,
+        $short,
+        color,
+        $currencies_scale,
+        {
+          background: styles.backgroundColor,
+          text: styles.color,
+          border: styles.borderTopColor,
+        },
+      ),
+      { notMerge: true },
     );
-    return closest?.date ?? new Date();
-  }
+    instance.resize();
+  });
+
+  $effect(() => {
+    instance?.dispatchAction({
+      type: "takeGlobalCursor",
+      key: "brush",
+      brushOption: { brushType: selecting ? "lineX" : false },
+    });
+  });
 </script>
 
-<svg viewBox={`0 0 ${width.toString()} ${height.toString()}`}>
-  <Brush
-    {invert}
-    height={inner_height}
-    transform={`translate(${offset.toString()},${margin.top.toString()})`}
+<div class="interval-actions">
+  <small
+    >Hover a month for its breakdown. Scroll or use the slider to zoom.</small
   >
-    <Axis x axis={x_axis} {inner_height} />
-    <Axis y axis={y_axis} line_at_zero={y(0)} />
-    {#each bar_groups as group (group.date)}
-      <g
-        class={["group", group.date > today && "desaturate"]}
-        {@attach tooltip.following(() => chart.tooltip_text($ctx, group))}
-        transform={`translate(${(x0(group.label) ?? 0).toString()},0)`}
-      >
-        <rect
-          class="group-box"
-          x={(x0.bandwidth() - x0.step()) / 2}
-          width={x0.step()}
-          height={inner_height}
-        />
-        <a
-          href={url_for_time_filter(group.date)}
-          aria-label={$current_time_filter_date_format(group.date)}
-        >
-          <rect
-            class="axis-group-box"
-            y={inner_height}
-            width={x0.bandwidth()}
-            height={margin.bottom}
-          />
-        </a>
-        {#if !show_stacked_bars}
-          {#each group.values as { currency, value, budget } (currency)}
-            <rect
-              fill={$currencies_scale(currency)}
-              width={x1.bandwidth()}
-              x={x1(currency)}
-              y={y(Math.max(0, value))}
-              height={Math.abs(y(value) - y(0))}
-            />
-            <rect
-              class="budget"
-              width={x1.bandwidth()}
-              x={x1(currency)}
-              y={y(Math.max(0, budget))}
-              height={Math.abs(y(budget) - y(0))}
-            />
-          {/each}
-        {/if}
-      </g>
-    {/each}
-    {#if show_stacked_bars}
-      <g class="stacks">
-        {#each stacks as [currency, account_stacks] (currency)}
-          {#each account_stacks as stack (stack.key)}
-            {@const account = stack.key}
-            <a href={$url_for_account(account)}>
-              {#each stack as bar (bar.data.date)}
-                <rect
-                  class={[bar.data.date > today && "desaturate"]}
-                  width={x1.bandwidth()}
-                  x={(x0(bar.data.label) ?? 0) + (x1(currency) ?? 0)}
-                  y={y(Math.max(bar[0], bar[1]))}
-                  height={Math.abs(y(bar[1]) - y(bar[0]))}
-                  fill={account_color_scale(account)}
-                  {@attach tooltip.following(() =>
-                    chart.tooltip_text_account(
-                      $ctx,
-                      bar.data,
-                      account,
-                      $chart_toggled_currencies,
-                    ),
-                  )}
-                />
-              {/each}
-            </a>
-          {/each}
-        {/each}
-      </g>
-    {/if}
-  </Brush>
-</svg>
+  <button
+    type="button"
+    aria-pressed={selecting}
+    onclick={() => (selecting = !selecting)}>Filter date range</button
+  >
+</div>
+<div
+  bind:this={host}
+  class="echarts-interval-chart"
+  aria-label="Interval income and expenses chart"
+></div>
+{#if load_error}<p role="alert">{load_error}</p>{/if}
+{#if stacked}<small class="net-caption">Line: net amount · ledger signs</small
+  >{/if}
 
 <style>
-  .stacks:hover a:not(:hover) {
-    opacity: 0.5;
+  .echarts-interval-chart {
+    height: 390px;
+    width: 100%;
+    background: var(--background);
+    color: var(--text-color);
+    border-color: var(--border);
   }
-
-  .axis-group-box,
-  .group-box {
-    opacity: 0;
+  .interval-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
   }
-
-  .group:hover .group-box {
-    opacity: 0.1;
+  .interval-actions small,
+  .net-caption {
+    color: var(--text-color-lightest);
   }
-
-  .budget {
-    opacity: 0.3;
+  .net-caption {
+    display: block;
+    text-align: center;
   }
-
-  .desaturate {
-    filter: saturate(50%);
+  @media (max-width: 600px) {
+    .echarts-interval-chart {
+      height: 340px;
+    }
+    .interval-actions {
+      align-items: start;
+    }
   }
 </style>
