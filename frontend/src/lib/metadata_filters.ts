@@ -4,10 +4,14 @@ import { escape_for_regex } from "./regex.ts";
 export function metadata_expression(key: string, value: string): string {
   if (!/^[a-z][a-zA-Z0-9_-]+$/.test(key))
     throw new Error("Invalid metadata key");
-  const escaped = escape_for_regex(value)
+  const escaped = regex_literal(value);
+  return `${key}:"^${escaped}$"`;
+}
+
+function regex_literal(value: string): string {
+  return escape_for_regex(value)
     .replaceAll('"', "\\x22")
     .replaceAll("'", "\\x27");
-  return `${key}:"^${escaped}$"`;
 }
 
 /** Split only top-level clauses; preserve quoted whitespace and nested expressions. */
@@ -71,4 +75,82 @@ export function set_metadata_filter(
   const kept = clauses.filter((c) => !managed.test(c));
   if (value) kept.push(metadata_expression(key, value));
   return kept.join(" ");
+}
+
+export interface MetadataField {
+  key: string;
+  label: string;
+  type: string;
+  scope: string;
+  sources: string[];
+  values: string[];
+  separator: string;
+  required: boolean;
+}
+
+/** Include virtual parents, so selecting a house includes all of its units. */
+export function metadata_nodes(
+  field: MetadataField,
+  observed: string[],
+): string[] {
+  const values = [...new Set([...observed, ...field.values])];
+  if (field.type !== "tree") return values.sort();
+  return [
+    ...new Set(
+      values.flatMap((v) => {
+        const parts = v.split(field.separator);
+        return parts.map((_, i) => parts.slice(0, i + 1).join(field.separator));
+      }),
+    ),
+  ].sort();
+}
+
+export function field_expression(field: MetadataField, value: string): string {
+  if (field.type !== "tree")
+    return metadata_expression(field.sources[0]!, value);
+  if (field.sources.length > 1) {
+    return value
+      .split(field.separator)
+      .map((v, i) => metadata_expression(field.sources[i]!, v))
+      .join(" ");
+  }
+  const exact = metadata_expression(field.sources[0]!, value);
+  const separator = regex_literal(field.separator);
+  return exact.slice(0, -2) + `(?:${separator}|$)"`;
+}
+
+export function selected_field(
+  filter: string,
+  field: MetadataField,
+  nodes: string[],
+): string {
+  const clauses = filter_clauses(filter);
+  return (
+    nodes
+      .slice()
+      .sort((a, b) => b.length - a.length)
+      .find((v) =>
+        filter_clauses(field_expression(field, v)).every((c) =>
+          clauses.includes(c),
+        ),
+      ) ?? ""
+  );
+}
+
+export function set_field_filter(
+  filter: string,
+  field: MetadataField,
+  value: string,
+): string {
+  let next = filter;
+  for (const key of field.sources) next = set_metadata_filter(next, key, "");
+  // Tree predicates have a delimiter boundary instead of an exact-match end anchor.
+  const prefix = `${field.sources[0]}:"^`;
+  const suffix = `(?:${regex_literal(field.separator)}|$)"`;
+  next = filter_clauses(next)
+    .filter((c) => !(c.startsWith(prefix) && c.endsWith(suffix)))
+    .join(" ");
+  return [next, value ? field_expression(field, value) : ""]
+    .filter(Boolean)
+    .join(" ");
 }

@@ -1,9 +1,11 @@
 <script lang="ts">
   import AutocompleteInput from "../components/AutocompleteInput.svelte";
   import {
-    metadata_expression,
-    selected_metadata,
-    set_metadata_filter,
+    field_expression,
+    metadata_nodes,
+    selected_field,
+    set_field_filter,
+    type MetadataField,
   } from "../lib/metadata_filters.ts";
   import { _ } from "../i18n.ts";
   import { escape_for_regex } from "../lib/regex.ts";
@@ -20,38 +22,30 @@
     tags,
     years,
     metadata_values,
-    metadata_records,
-    metadata_keys,
+    metadata_schema,
+    metadata_issues,
   } from "../stores/index.ts";
 
+  let filter_fields = $derived(
+    $metadata_schema.filter(
+      (f) =>
+        f.scope !== "posting" && ["string", "enum", "tree"].includes(f.type),
+    ),
+  );
   let fql_filter_suggestions = $derived([
-    ...Object.entries($metadata_values).flatMap(([key, values]) =>
-      values.map((value) => metadata_expression(key, value)),
+    ...filter_fields.flatMap((field) =>
+      metadata_nodes(field, $metadata_values[field.key] ?? []).map((value) =>
+        field_expression(field, value),
+      ),
     ),
     ...$tags.map((tag) => `#${tag}`),
     ...$links.map((link) => `^${link}`),
     ...$payees.map((payee) => `payee:"${escape_for_regex(payee)}"`),
   ]);
-
-  function available_values(key: string, values: string[]): string[] {
-    const property = selected_metadata(
-      $fql_filter,
-      "property",
-      $metadata_values["property"] ?? [],
-    );
-    if (key !== "unit" || !property) return values;
-    const units = new Set(
-      $metadata_records
-        .filter((row) => row["property"] === property)
-        .map((row) => row["unit"]),
-    );
-    return values.filter((value) => units.has(value));
-  }
   let metadata_error = $state("");
-  function update_metadata(key: string, value: string) {
+  function update_metadata(field: MetadataField, value: string) {
     try {
-      let filter = set_metadata_filter($fql_filter, key, value);
-      if (key === "property") filter = set_metadata_filter(filter, "unit", "");
+      const filter = set_field_filter($fql_filter, field, value);
       metadata_error = "";
       router.set_search_param("filter", filter);
     } catch (error) {
@@ -117,27 +111,41 @@
   />
 </div>
 
-{#if Object.keys($metadata_values).length}
+{#if filter_fields.length}
   <div class="metadata-filters" aria-label="Entry metadata filters">
-    {#each $metadata_keys as key (key)}
-      {@const values = $metadata_values[key] ?? []}
+    {#each filter_fields as field (field.key)}
+      {@const nodes = metadata_nodes(field, $metadata_values[field.key] ?? [])}
       <label>
-        <span>{key.replaceAll("_", " ")}</span>
+        <span>{field.label}</span>
         <select
-          aria-label={key.replaceAll("_", " ")}
-          value={selected_metadata($fql_filter, key, values)}
-          onchange={(event) => update_metadata(key, event.currentTarget.value)}
+          aria-label={field.label}
+          value={selected_field($fql_filter, field, nodes)}
+          onchange={(event) =>
+            update_metadata(field, event.currentTarget.value)}
         >
           <option value="">All</option>
-          {#each available_values(key, values) as value}<option {value}
-              >{value}</option
-            >{/each}
+          {#each nodes as value}
+            <option {value}
+              >{field.type === "tree"
+                ? " ".repeat(value.split(field.separator).length - 1) +
+                  value.split(field.separator).join(` ${field.separator} `)
+                : value}</option
+            >
+          {/each}
         </select>
       </label>
     {/each}
-    <small>Entry metadata · pooled entries remain mixed/unallocated</small>
+    <small>Journal metadata · tree selections include descendants</small>
   </div>
-  {#if metadata_error}<p role="alert">{metadata_error}</p>{/if}
+{/if}
+{#if metadata_error}<p role="alert">{metadata_error}</p>{/if}
+{#if $metadata_issues.length}
+  <details class="metadata-issues">
+    <summary>Metadata schema: {$metadata_issues.length} issues</summary>
+    <ul>
+      {#each $metadata_issues as issue}<li>{issue}</li>{/each}
+    </ul>
+  </details>
 {/if}
 
 <style>

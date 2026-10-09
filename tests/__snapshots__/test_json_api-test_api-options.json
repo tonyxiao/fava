@@ -55,6 +55,7 @@
     "invert-income-liabilities-equity": "False",
     "language": "None",
     "locale": "None",
+    "metadata-schema": "''",
     "show-accounts-with-zero-balance": "False",
     "show-accounts-with-zero-transactions": "True",
     "show-closed-accounts": "False",

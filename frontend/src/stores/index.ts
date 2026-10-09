@@ -61,9 +61,5 @@ export const metadata_values = derived(ledger_data, (v) => v.metadata_values);
 
 export const metadata_records = derived(ledger_data, (v) => v.metadata_records);
 
-export const metadata_keys = derived(ledger_data, (v) =>
-  v.fava_options.filter_metadata
-    .split(",")
-    .map((key) => key.trim())
-    .filter((key) => key in v.metadata_values),
-);
+export const metadata_schema = derived(ledger_data, (v) => v.metadata_schema);
+export const metadata_issues = derived(ledger_data, (v) => v.metadata_issues);

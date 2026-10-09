@@ -95,6 +95,7 @@ class FavaOptions:
     currency_column: int = 61
     default_file: str | None = None
     default_page: str = "income_statement/"
+    metadata_schema: str = ""
     filter_metadata: str = (
         "property,unit,ownership_scope,platform,event_type,estimate_status"
     )
