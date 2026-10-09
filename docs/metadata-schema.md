@@ -63,9 +63,15 @@ back to misleading controls.
 
 # Interval charts
 
-Stacked bars show all account series for the hovered interval, including zero
-values, followed by the interval's net for each visible currency. Hovering any
-segment shows the same complete interval. The net overlay and bars use the same
-scale and signed ledger values; an income-statement credit remains negative.
-Currency totals are never added to each other. Use report conversion to USD for
-one comparable net series. The line has a contrasting halo and per-interval dots.
+Stacked bars use a fixed detail panel rather than a floating tooltip. On wide
+screens it sits beside the plot; on narrow screens it appears below. Hovering any
+segment selects the entire interval, and details stay visible when the pointer
+leaves. A native interval selector supports keyboard and touch inspection. The
+selected month is highlighted without covering the bars.
+
+The panel lists every account series, including zero values, followed by signed
+net for each visible currency. Account names link to the account report. The net
+overlay and bars use the same scale and signed ledger values; an income-statement
+credit remains negative. Currency totals are never added to each other. Use
+report conversion to USD for one comparable net series. The line has a contrasting
+halo and per-interval dots. Single-bar charts keep their compact tooltips.

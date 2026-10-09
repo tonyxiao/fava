@@ -26,30 +26,3 @@ svg text {
     color: var(--text-color-lightest);
   }
 }
-
-.tooltip .interval-values {
-  border-collapse: collapse;
-  text-align: left;
-  font-family: var(--font-family);
-}
-.tooltip .interval-values td {
-  padding: 3px 6px;
-}
-.tooltip .interval-values td:first-child {
-  overflow-wrap: anywhere;
-}
-.tooltip .interval-values td:last-child {
-  text-align: right;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.tooltip .interval-values .net {
-  border-top: 1px solid var(--border);
-  font-weight: bold;
-}
-.tooltip .series-swatch {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  margin-right: 6px;
-}

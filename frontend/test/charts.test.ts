@@ -349,7 +349,7 @@ test("only use currencies in records for bar chart", () => {
   ]);
 });
 
-test("stacked interval tooltip includes every account and signed net per visible currency", () => {
+test("interval summary includes every series, zeros and signed net for visible currencies", () => {
   const chart = ParsedBarChart.validator({
     label: "Net",
     data: [
@@ -371,17 +371,15 @@ test("stacked interval tooltip includes every account and signed net per visible
       dateFormat: () => "December 2025",
     });
   const group = chart.filter(["CZK"]).bar_groups[0]!;
-  const context = {
-    amount: (value: number, currency: string) => `${value} ${currency}`,
-  } as import("../src/format.ts").FormatterContext;
-  const text = chart
-    .tooltip_text_stacked(context, group)
-    .map((v) => (typeof v === "string" ? v : v.textContent))
-    .join("\n");
-  ok(text.includes("December 2025"));
-  ok(text.includes("Income:Rent: -100 USD"));
-  ok(text.includes("Expenses:Cleaning: 20 USD"));
-  ok(text.includes("Expenses:Fees: 0 USD"));
-  ok(text.includes("Net: -80 USD"));
-  ok(!text.includes("CZK"));
+  deepEqual(chart.interval_summary(group), [
+    {
+      currency: "USD",
+      net: -80,
+      series: [
+        { account: "Expenses:Cleaning", value: 20 },
+        { account: "Expenses:Fees", value: 0 },
+        { account: "Income:Rent", value: -100 },
+      ],
+    },
+  ]);
 });
