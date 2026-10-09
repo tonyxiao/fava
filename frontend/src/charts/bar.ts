@@ -94,24 +94,40 @@ export class BarChart {
     return this.accounts.length > 1;
   }
 
-  /** The tooltip for a hovered account in the stacked bar chart. */
-  tooltip_text_account(
+  /** The complete interval, independent of the segment under the cursor. */
+  tooltip_text_stacked(
     $ctx: FormatterContext,
     d: BarChartDatum,
-    account: string,
-    $chart_toggled_currencies: readonly string[],
+    color?: (account: string) => string,
   ): TooltipContent {
-    const content = [];
-    content.push(domHelpers.em(account));
-    d.values.forEach(({ currency }) => {
-      if (!$chart_toggled_currencies.includes(currency)) {
-        const value = d.account_balances[account]?.[currency] ?? 0;
-        content.push($ctx.amount(value, currency));
-        content.push(domHelpers.br());
+    const table = document.createElement("table");
+    table.className = "interval-values";
+    for (const { currency, value } of d.values) {
+      const body = table.createTBody();
+      const heading = body.insertRow().insertCell();
+      heading.colSpan = 2;
+      heading.append(domHelpers.em(currency));
+      for (const account of this.accounts) {
+        const row = body.insertRow();
+        const name = row.insertCell();
+        if (color) {
+          const swatch = document.createElement("span");
+          swatch.className = "series-swatch";
+          swatch.style.backgroundColor = color(account);
+          name.append(swatch);
+        }
+        name.append(`${account}: `);
+        row.insertCell().textContent = $ctx.amount(
+          d.account_balances[account]?.[currency] ?? 0,
+          currency,
+        );
       }
-    });
-    content.push(domHelpers.em(d.label));
-    return content;
+      const net = body.insertRow();
+      net.className = "net";
+      net.insertCell().textContent = "Net: ";
+      net.insertCell().textContent = $ctx.amount(value, currency);
+    }
+    return [domHelpers.em(d.label), table];
   }
 
   /** The tooltip for a hovered bar group in the bar chart. */

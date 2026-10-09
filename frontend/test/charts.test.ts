@@ -348,3 +348,40 @@ test("only use currencies in records for bar chart", () => {
     },
   ]);
 });
+
+test("stacked interval tooltip includes every account and signed net per visible currency", () => {
+  const chart = ParsedBarChart.validator({
+    label: "Net",
+    data: [
+      {
+        date: "2025-12-01",
+        budgets: {},
+        balance: { USD: -80, CZK: -40 },
+        account_balances: {
+          "Income:Rent": { USD: -100, CZK: -50 },
+          "Expenses:Cleaning": { USD: 20, CZK: 10 },
+          "Expenses:Fees": { USD: 0 },
+        },
+      },
+    ],
+  })
+    .unwrap()
+    .with_context({
+      currencies: ["USD", "CZK"],
+      dateFormat: () => "December 2025",
+    });
+  const group = chart.filter(["CZK"]).bar_groups[0]!;
+  const context = {
+    amount: (value: number, currency: string) => `${value} ${currency}`,
+  } as import("../src/format.ts").FormatterContext;
+  const text = chart
+    .tooltip_text_stacked(context, group)
+    .map((v) => (typeof v === "string" ? v : v.textContent))
+    .join("\n");
+  ok(text.includes("December 2025"));
+  ok(text.includes("Income:Rent: -100 USD"));
+  ok(text.includes("Expenses:Cleaning: 20 USD"));
+  ok(text.includes("Expenses:Fees: 0 USD"));
+  ok(text.includes("Net: -80 USD"));
+  ok(!text.includes("CZK"));
+});

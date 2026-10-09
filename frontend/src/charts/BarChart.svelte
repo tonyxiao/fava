@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { line } from "d3-shape";
   import { extent, least } from "d3-array";
   import { axisBottom, axisLeft } from "d3-axis";
   import { scaleBand, scaleLinear, scaleOrdinal } from "d3-scale";
@@ -67,7 +68,10 @@
 
   let y_extent = $derived(
     show_stacked_bars
-      ? extent(stacks.flatMap(([, s]) => s.flat(2)))
+      ? extent([
+          ...stacks.flatMap(([, s]) => s.flat(2)),
+          ...bar_groups.flatMap((g) => g.values.map((v) => v.value)),
+        ])
       : extent(
           bar_groups.flatMap((d) => d.values),
           (d) => d.value,
@@ -112,7 +116,11 @@
     {#each bar_groups as group (group.date)}
       <g
         class={["group", group.date > today && "desaturate"]}
-        {@attach tooltip.following(() => chart.tooltip_text($ctx, group))}
+        {@attach tooltip.following(() =>
+          show_stacked_bars
+            ? chart.tooltip_text_stacked($ctx, group, account_color_scale)
+            : chart.tooltip_text($ctx, group),
+        )}
         transform={`translate(${(x0(group.label) ?? 0).toString()},0)`}
       >
         <rect
@@ -167,11 +175,16 @@
                   height={Math.abs(y(bar[1]) - y(bar[0]))}
                   fill={account_color_scale(account)}
                   {@attach tooltip.following(() =>
-                    chart.tooltip_text_account(
+                    chart.tooltip_text_stacked(
                       $ctx,
-                      bar.data,
-                      account,
-                      $chart_toggled_currencies,
+                      {
+                        ...bar.data,
+                        values: bar.data.values.filter(
+                          (v) =>
+                            !$chart_toggled_currencies.includes(v.currency),
+                        ),
+                      },
+                      account_color_scale,
                     ),
                   )}
                 />
@@ -181,12 +194,61 @@
         {/each}
       </g>
     {/if}
+    {#if show_stacked_bars}
+      <g class="net-overlay" aria-label="Net amount by interval">
+        {#each currencies as currency (currency)}
+          {@const path = line<(typeof bar_groups)[number]>()
+            .x(
+              (g) =>
+                (x0(g.label) ?? 0) + (x1(currency) ?? 0) + x1.bandwidth() / 2,
+            )
+            .y((g) =>
+              y(g.values.find((v) => v.currency === currency)?.value ?? 0),
+            )(bar_groups)}
+          <path class="net-halo" d={path} />
+          <path
+            class="net-line"
+            d={path}
+            stroke={$currencies_scale(currency)}
+          />
+          {#each bar_groups as group (group.date)}
+            <circle
+              cx={(x0(group.label) ?? 0) +
+                (x1(currency) ?? 0) +
+                x1.bandwidth() / 2}
+              cy={y(
+                group.values.find((v) => v.currency === currency)?.value ?? 0,
+              )}
+              r="3"
+              fill={$currencies_scale(currency)}
+            />
+          {/each}
+        {/each}
+      </g>
+    {/if}
   </Brush>
 </svg>
+{#if show_stacked_bars}<small class="net-caption"
+    >Line: net amount · ledger signs · separate line per currency</small
+  >{/if}
 
 <style>
-  .stacks:hover a:not(:hover) {
-    opacity: 0.5;
+  .net-overlay {
+    pointer-events: none;
+  }
+  .net-line,
+  .net-halo {
+    fill: none;
+    stroke-width: 2.5;
+  }
+  .net-halo {
+    stroke: var(--background);
+    stroke-width: 5;
+  }
+  .net-caption {
+    display: block;
+    text-align: center;
+    opacity: 0.8;
   }
 
   .axis-group-box,
