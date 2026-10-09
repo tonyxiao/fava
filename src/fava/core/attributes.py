@@ -67,9 +67,32 @@ class AttributesModule(FavaModule):
         self.links: Sequence[str] = []
         self.tags: Sequence[str] = []
         self.years: Sequence[str] = []
+        self.metadata_values: dict[str, list[str]] = {}
+        self.metadata_records: list[dict[str, str]] = []
 
     def load_file(self) -> None:  # noqa: D102
         all_entries = self.ledger.all_entries
+        keys = [
+            key.strip()
+            for key in self.ledger.fava_options.filter_metadata.split(",")
+            if key.strip()
+        ]
+        # Only entry metadata; posting matches select the whole pooled entry.
+        values: dict[str, set[str]] = {key: set() for key in keys}
+        combinations: set[tuple[tuple[str, str], ...]] = set()
+        for txn in self.ledger.all_entries_by_type.Transaction:
+            row: dict[str, str] = {}
+            for key in keys:
+                value = (txn.meta or {}).get(key)
+                if isinstance(value, str) and value:
+                    values[key].add(value)
+                    row[key] = value
+            if row:
+                combinations.add(tuple(sorted(row.items())))
+        self.metadata_records = [dict(row) for row in sorted(combinations)]
+        self.metadata_values = {
+            key: sorted(items) for key, items in values.items() if items
+        }
 
         all_links = set()
         all_tags = set()

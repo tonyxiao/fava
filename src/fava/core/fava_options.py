@@ -95,6 +95,9 @@ class FavaOptions:
     currency_column: int = 61
     default_file: str | None = None
     default_page: str = "income_statement/"
+    filter_metadata: str = (
+        "property,unit,ownership_scope,platform,event_type,estimate_status"
+    )
     fiscal_year_end: FiscalYearEnd = END_OF_YEAR
     import_config: str | None = None
     import_dirs: Sequence[str] = field(default_factory=list)

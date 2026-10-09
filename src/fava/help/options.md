@@ -246,3 +246,15 @@ Default: Not set
 When set, the currency conversion select dropdown in all charts will show the
 list of currencies specified in this option. By default, Fava lists all
 operating currencies and those currencies that match ISO 4217 currency codes.
+
+## filter-metadata
+
+Comma-separated transaction metadata keys to offer as exact-match report filters.
+The default is `property,unit,ownership_scope,platform,event_type,estimate_status`.
+Only keys with observed nonempty string values appear. Posting metadata is not
+promoted to entry dimensions because a match would select the entire pooled
+transaction. Use posting-level queries for allocations.
+
+```beancount
+2000-01-01 custom "fava-option" "filter-metadata" "property,unit,department"
+```

@@ -782,6 +782,7 @@
     "currency_column": 61,
     "default_file": null,
     "default_page": "income_statement/",
+    "filter_metadata": "property,unit,ownership_scope,platform,event_type,estimate_status",
     "fiscal_year_end": { "day": 31, "month": 12 },
     "import_config": null,
     "import_dirs": [],
@@ -803,6 +804,8 @@
   "have_excel": true,
   "incognito": false,
   "links": ["test-link"],
+  "metadata_records": [],
+  "metadata_values": {},
   "options": {
     "documents": [],
     "filename": "TEST_DATA_DIR/long-example.beancount",
