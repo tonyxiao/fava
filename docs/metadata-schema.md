@@ -63,15 +63,19 @@ back to misleading controls.
 
 # Interval charts
 
-Stacked bars use a fixed detail panel rather than a floating tooltip. On wide
-screens it sits beside the plot; on narrow screens it appears below. Hovering any
-segment selects the entire interval, and details stay visible when the pointer
-leaves. A native interval selector supports keyboard and touch inspection. The
-selected month is highlighted without covering the bars.
+Interval charts use Apache ECharts 6.1.0 through a lazy-loaded local SVG renderer.
+Stacked bars have a net line for each visible currency. Hover or tap a month for a
+compact axis tooltip listing all account series, zero values and signed net last.
+A crosshair marks the month. Long/multicurrency breakdowns scroll inside the
+tooltip. No fixed detail table replaces the tooltip.
 
-The panel lists every account series, including zero values, followed by signed
-net for each visible currency. Account names link to the account report. The net
-overlay and bars use the same scale and signed ledger values; an income-statement
-credit remains negative. Currency totals are never added to each other. Use
-report conversion to USD for one comparable net series. The line has a contrasting
-halo and per-interval dots. Single-bar charts keep their compact tooltips.
+Use the slider or scroll to zoom visually; source data remains unchanged. The
+Filter date range button enables dragging a range into Fava's native time filter.
+Click a month axis label to filter that interval, or a bar series to open its
+account report. Single bars retain totals and budgets. Property, time, currency
+and conversion filters remain owned by Fava.
+
+Income-statement credits remain negative. Each native currency has its own stack
+and net line, never a sum across currencies. Convert the report to USD for one
+comparable net series. Dark/light colors follow Fava. Rendering is local; no CDN,
+remote chart service or third-party finance-data transfer is involved.

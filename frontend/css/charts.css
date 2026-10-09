@@ -26,3 +26,44 @@ svg text {
     color: var(--text-color-lightest);
   }
 }
+
+.echarts-interval-tooltip {
+  max-width: min(340px, calc(100vw - 56px));
+  max-height: min(270px, calc(100vh - 120px));
+  overflow-y: auto;
+  font-family: var(--font-family);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+}
+.echarts-interval-tooltip table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.echarts-interval-tooltip td {
+  padding: 2px 4px;
+}
+.echarts-interval-tooltip td:first-child {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.echarts-interval-tooltip td:last-child {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.echarts-interval-tooltip .currency {
+  color: var(--text-color-lightest);
+  padding-top: 5px;
+}
+.echarts-interval-tooltip .net {
+  border-top: 1px solid var(--border);
+  font-weight: bold;
+}
+.echarts-interval-tooltip .swatch {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 5px;
+}

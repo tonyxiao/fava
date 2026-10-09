@@ -28,3 +28,5 @@ or warnings. Desktop preview verifies hover updates, highlighted month, zero
 floating tooltip opacity and panel positioned outside the plot. At 390-pixel
 width the panel moves below the plot and fits within the viewport width. Selector
 changes update the month and highlight. No Python or ledger changes in this patch.
+
+Superseded: user rejected the fixed table and requested a charting-library replacement. See `echarts-interval-charts.md`; the fixed-panel component was removed.
