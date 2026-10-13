@@ -93,3 +93,20 @@ test("ECharts axis tooltip contains the full interval, zero series and net last"
   equal(unsafe.querySelectorAll("img").length, 0);
   ok(unsafe.textContent?.includes("<img"));
 });
+
+test("hover passes through the tooltip and selects months without animation", () => {
+  const tooltip = options([], true).tooltip;
+  ok(tooltip && !Array.isArray(tooltip));
+  equal(tooltip.enterable, false);
+  equal(tooltip.transitionDuration, 0);
+  equal(tooltip.extraCssText, "pointer-events: none;");
+  equal(tooltip.axisPointer?.axis, "x");
+  equal(tooltip.axisPointer?.animation, false);
+});
+
+test("interval chart has no zoom or drag-selection controls", () => {
+  const config = options([], true);
+  equal(config.dataZoom, undefined);
+  equal(config.brush, undefined);
+  equal(config.toolbox, undefined);
+});

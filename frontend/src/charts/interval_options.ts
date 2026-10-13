@@ -131,11 +131,11 @@ export function interval_options(
       enabled: true,
       label: {
         description:
-          "Income and expenses by interval. Bars show signed ledger amounts and lines show net. Hover or tap a month for its full breakdown; use the slider to zoom.",
+          "Income and expenses by interval. Bars show signed ledger amounts and lines show net. Hover or tap a month for its full breakdown; use the report controls to change the date range.",
       },
     },
     textStyle: { color: theme.text, fontFamily: "Fira Sans, sans-serif" },
-    grid: { left: 12, right: 18, top: 20, bottom: 95, outerBoundsMode: "same" },
+    grid: { left: 12, right: 18, top: 20, bottom: 55, outerBoundsMode: "same" },
     xAxis: {
       type: "category",
       data: bar_groups.map((g) => g.label),
@@ -151,9 +151,17 @@ export function interval_options(
     tooltip: {
       trigger: "axis",
       confine: true,
-      enterable: true,
-      hideDelay: 80,
-      axisPointer: { type: "cross", label: { show: false } },
+      enterable: false,
+      transitionDuration: 0,
+      showDelay: 0,
+      hideDelay: 0,
+      extraCssText: "pointer-events: none;",
+      axisPointer: {
+        type: "cross",
+        axis: "x",
+        animation: false,
+        label: { show: false },
+      },
       backgroundColor: theme.background,
       borderColor: theme.border,
       padding: 10,
@@ -174,28 +182,11 @@ export function interval_options(
     },
     legend: {
       type: "scroll",
-      bottom: 40,
+      bottom: 4,
       selectedMode: false,
       textStyle: { color: theme.text, fontSize: 11 },
       formatter: (name: string) =>
         chart.accounts.includes(name) ? series_label(name) : name,
-    },
-    dataZoom: [
-      { type: "inside", xAxisIndex: 0, filterMode: "none" },
-      {
-        type: "slider",
-        xAxisIndex: 0,
-        filterMode: "none",
-        height: 20,
-        bottom: 4,
-        textStyle: { color: theme.text },
-      },
-    ],
-    brush: {
-      xAxisIndex: 0,
-      brushType: "lineX",
-      brushMode: "single",
-      transformable: false,
     },
     series,
   };

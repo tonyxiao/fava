@@ -24,7 +24,6 @@
   let instance = $state.raw<EChartsType>();
   let load_error = $state("");
   let system_theme = $state(0);
-  let selecting = $state(false);
   let stacked = $derived($bar_chart_mode === "stacked" && chart.hasStackedData);
   let color = $derived(
     scaleOrdinal(hcl_color_range(chart.accounts.length)).domain(chart.accounts),
@@ -62,35 +61,6 @@
             chart.accounts.includes(params.seriesName)
           ) {
             router.navigate($url_for_account(params.seriesName));
-          }
-        });
-        engine.on("brushEnd", (params: unknown) => {
-          if (
-            !params ||
-            typeof params !== "object" ||
-            !("areas" in params) ||
-            !Array.isArray(params.areas)
-          )
-            return;
-          const range: unknown = params.areas[0]?.coordRange;
-          if (
-            !Array.isArray(range) ||
-            range.length !== 2 ||
-            !range.every((v) => typeof v === "number")
-          )
-            return;
-          const groups = chart.filter($chart_toggled_currencies).bar_groups;
-          const from = groups[Math.max(0, Math.round(Math.min(...range)))];
-          const to =
-            groups[Math.min(groups.length - 1, Math.round(Math.max(...range)))];
-          if (from && to) {
-            const start = $current_time_filter_date_format(from.date),
-              end = $current_time_filter_date_format(to.date);
-            selecting = false;
-            router.set_search_param(
-              "time",
-              start === end ? start : `${start} - ${end}`,
-            );
           }
         });
         instance = engine;
@@ -131,24 +101,12 @@
     );
     instance.resize();
   });
-
-  $effect(() => {
-    instance?.dispatchAction({
-      type: "takeGlobalCursor",
-      key: "brush",
-      brushOption: { brushType: selecting ? "lineX" : false },
-    });
-  });
 </script>
 
 <div class="interval-actions">
   <small
-    >Hover a month for its breakdown. Scroll or use the slider to zoom.</small
-  >
-  <button
-    type="button"
-    aria-pressed={selecting}
-    onclick={() => (selecting = !selecting)}>Filter date range</button
+    >Hover a month for its breakdown. Use the report controls to change the date
+    range.</small
   >
 </div>
 <div

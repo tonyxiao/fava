@@ -29,8 +29,7 @@ svg text {
 
 .echarts-interval-tooltip {
   max-width: min(340px, calc(100vw - 56px));
-  max-height: min(270px, calc(100vh - 120px));
-  overflow-y: auto;
+  pointer-events: none;
   font-family: var(--font-family);
   font-size: 12px;
   line-height: 1.4;
