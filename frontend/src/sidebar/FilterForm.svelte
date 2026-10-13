@@ -1,6 +1,13 @@
 <script lang="ts">
   import AutocompleteInput from "../components/AutocompleteInput.svelte";
   import { _ } from "../i18n.ts";
+  import {
+    field_expression,
+    type MetadataField,
+    metadata_nodes,
+    selected_field,
+    set_field_filter,
+  } from "../lib/metadata_filters.ts";
   import { escape_for_regex } from "../lib/regex.ts";
   import { router } from "../router.ts";
   import {
@@ -8,13 +15,44 @@
     fql_filter,
     time_filter,
   } from "../stores/filters.ts";
-  import { accounts, links, payees, tags, years } from "../stores/index.ts";
+  import {
+    accounts,
+    links,
+    metadata_issues,
+    metadata_schema,
+    metadata_values,
+    payees,
+    tags,
+    years,
+  } from "../stores/index.ts";
 
+  let filter_fields = $derived(
+    $metadata_schema.filter(
+      (f) =>
+        f.scope !== "posting" && ["string", "enum", "tree"].includes(f.type),
+    ),
+  );
   let fql_filter_suggestions = $derived([
+    ...filter_fields.flatMap((field) =>
+      metadata_nodes(field, $metadata_values[field.key] ?? []).map((value) =>
+        field_expression(field, value),
+      ),
+    ),
     ...$tags.map((tag) => `#${tag}`),
     ...$links.map((link) => `^${link}`),
     ...$payees.map((payee) => `payee:"${escape_for_regex(payee)}"`),
   ]);
+  let metadata_error = $state("");
+  function update_metadata(field: MetadataField, value: string) {
+    try {
+      const filter = set_field_filter($fql_filter, field, value);
+      metadata_error = "";
+      router.set_search_param("filter", filter);
+    } catch (error) {
+      metadata_error =
+        error instanceof Error ? error.message : "Unable to update filter";
+    }
+  }
 
   function value_extractor(value: string, input: HTMLInputElement) {
     const match = /\S*$/.exec(
@@ -73,6 +111,44 @@
   />
 </div>
 
+{#if filter_fields.length}
+  <div class="metadata-filters" aria-label="Entry metadata filters">
+    {#each filter_fields as field (field.key)}
+      {@const nodes = metadata_nodes(field, $metadata_values[field.key] ?? [])}
+      <label>
+        <span>{field.label}</span>
+        <select
+          aria-label={field.label}
+          value={selected_field($fql_filter, field, nodes)}
+          onchange={(event) => {
+            update_metadata(field, event.currentTarget.value);
+          }}
+        >
+          <option value="">All</option>
+          {#each nodes as value (value)}
+            <option {value}
+              >{field.type === "tree"
+                ? " ".repeat(value.split(field.separator).length - 1) +
+                  value.split(field.separator).join(` ${field.separator} `)
+                : value}</option
+            >
+          {/each}
+        </select>
+      </label>
+    {/each}
+    <small>Journal metadata · tree selections include descendants</small>
+  </div>
+{/if}
+{#if metadata_error}<p role="alert">{metadata_error}</p>{/if}
+{#if $metadata_issues.length}
+  <details class="metadata-issues">
+    <summary>Metadata schema: {$metadata_issues.length} issues</summary>
+    <ul>
+      {#each $metadata_issues as issue (issue)}<li>{issue}</li>{/each}
+    </ul>
+  </details>
+{/if}
+
 <style>
   div {
     --placeholder-color: var(--header-placeholder-color);
@@ -96,6 +172,30 @@
     }
   }
 
+  .metadata-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: end;
+    padding-top: 6px;
+  }
+  .metadata-filters label {
+    display: grid;
+    gap: 3px;
+    font-size: 12px;
+  }
+  .metadata-filters select {
+    max-width: 200px;
+    padding: 5px;
+    color: var(--text-color);
+    background: var(--background);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+  }
+  .metadata-filters small {
+    font-size: 11px;
+    opacity: 0.8;
+  }
   @media print {
     div {
       --input-padding: 8px 10px;

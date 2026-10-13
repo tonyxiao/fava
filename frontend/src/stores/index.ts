@@ -55,3 +55,11 @@ export const years = derived_array(ledger_data, (v) => v.years);
 export const currencies_sorted = derived_array(currencies, ($currencies) =>
   $currencies.toSorted(compare_strings),
 );
+
+/** Configured entry-metadata dimensions and their observed values. */
+export const metadata_values = derived(ledger_data, (v) => v.metadata_values);
+
+export const metadata_records = derived(ledger_data, (v) => v.metadata_records);
+
+export const metadata_schema = derived(ledger_data, (v) => v.metadata_schema);
+export const metadata_issues = derived(ledger_data, (v) => v.metadata_issues);

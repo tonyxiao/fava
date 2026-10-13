@@ -64,6 +64,10 @@ class LedgerData(Struct, frozen=True):
     links: Sequence[str]
     options: dict[str, str | Sequence[str]]
     payees: Sequence[str]
+    metadata_values: dict[str, list[str]]
+    metadata_records: list[dict[str, str]]
+    metadata_schema: list[dict]
+    metadata_issues: list[str]
     precisions: dict[str, int]
     tags: Sequence[str]
     years: Sequence[str]
@@ -113,6 +117,10 @@ def get_ledger_data() -> LedgerData:
         ledger.attributes.links,
         _get_options(),
         ledger.attributes.payees,
+        ledger.attributes.metadata_values,
+        ledger.attributes.metadata_records,
+        ledger.attributes.metadata_schema,
+        ledger.attributes.metadata_issues,
         ledger.format_decimal.precisions,
         ledger.attributes.tags,
         ledger.attributes.years,

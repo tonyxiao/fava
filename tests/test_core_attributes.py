@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+from textwrap import dedent
 from typing import TYPE_CHECKING
 
+from fava.core import FavaLedger
 from fava.core.attributes import get_active_years
 from fava.util.date import END_OF_YEAR
 from fava.util.date import FiscalYearEnds
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Sequence
+    from pathlib import Path
 
     from fava.beans.abc import Directive
-    from fava.core import FavaLedger
 
     from .conftest import SnapshotFunc
 
@@ -80,3 +82,61 @@ def test_narrations(
     narrations = example_ledger.attributes.narrations
     assert narrations
     snapshot(narrations, json=True)
+
+
+def test_metadata_dimensions_are_entry_scoped(tmp_path: Path) -> None:
+    """
+    2025-01-01 open Assets:Bank USD
+    2025-01-01 open Income:Rent USD
+    2025-01-02 * "Platform" "Owned stay"
+      property: "House"
+      unit: "Upstairs"
+      ownership_scope: "Owned"
+      Assets:Bank 100 USD
+      Income:Rent -100 USD
+    2025-01-03 * "Platform" "Pooled payment"
+      property: "Mixed"
+      Assets:Bank 50 USD
+        property: "Posting-only house"
+      Income:Rent -50 USD
+    """
+    path = tmp_path / "metadata.bean"
+    path.write_text(
+        dedent(test_metadata_dimensions_are_entry_scoped.__doc__ or "")
+    )
+    load_doc = FavaLedger(str(path))
+    assert load_doc.attributes.metadata_values["property"] == [
+        "House",
+        "Mixed",
+    ]
+    assert (
+        "Posting-only house"
+        not in load_doc.attributes.metadata_values["property"]
+    )
+    assert any(
+        row.get("property") == "House" and row.get("unit") == "Upstairs"
+        for row in load_doc.attributes.metadata_records
+    )
+
+
+def test_configured_metadata_keys_and_non_string_values(
+    tmp_path: Path,
+) -> None:
+    """
+    2025-01-01 custom "fava-option" "filter-metadata" "department"
+    2025-01-01 open Assets:Bank USD
+    2025-01-01 open Income:Rent USD
+    2025-01-02 * "Platform" "Stay"
+      department: "Ops"
+      property: "Not selected"
+      Assets:Bank 100 USD
+      Income:Rent -100 USD
+    """
+    path = tmp_path / "metadata.bean"
+    path.write_text(
+        dedent(
+            test_configured_metadata_keys_and_non_string_values.__doc__ or ""
+        )
+    )
+    load_doc = FavaLedger(str(path))
+    assert load_doc.attributes.metadata_values == {"department": ["Ops"]}

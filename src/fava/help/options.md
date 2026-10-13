@@ -247,3 +247,32 @@ Default: Not set
 When set, the currency conversion select dropdown in all charts will show the
 list of currencies specified in this option. By default, Fava lists all
 operating currencies and those currencies that match ISO 4217 currency codes.
+
+## filter-metadata
+
+Comma-separated transaction metadata keys to offer as exact-match report
+filters. The default is
+`property,unit,ownership_scope,platform,event_type,estimate_status`. Only keys
+with observed nonempty string values appear. Posting metadata is not promoted to
+entry dimensions because a match would select the entire pooled transaction. Use
+posting-level queries for allocations.
+
+```beancount
+2000-01-01 custom "fava-option" "filter-metadata" "property,unit,department"
+```
+
+## metadata-schema
+
+Versioned JSON metadata contract. Fields declare `key`, `label`, `type`,
+`scope`, `required`, and optional vocabulary `values`. Types are string, enum,
+tree, number, boolean and date. Scopes are transaction, posting and both.
+String/enum/tree transaction fields generate journal filters. Posting fields are
+validated but never select whole pooled journals. Numeric, boolean and date
+fields are validated; use the query report for typed comparisons.
+
+Tree fields use slash-delimited paths by default. Selecting a parent includes
+its descendants. Optional `sources` compose existing metadata into a path, e.g.
+`["property", "unit"]`. This does not mutate ledger data. Invalid contracts and
+values show a schema diagnostics panel. See `docs/metadata-schema.md` in the
+fork for the complete contract and examples. Without a schema, `filter-metadata`
+continues to provide flat string fields.

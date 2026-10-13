@@ -296,3 +296,39 @@ test("only use currencies in records for bar chart", () => {
     },
   ]);
 });
+
+test("interval summary includes every series, zeros and signed net for visible currencies", () => {
+  const chart = ParsedBarChart.validator({
+    label: "Net",
+    data: [
+      {
+        date: "2025-12-01",
+        budgets: {},
+        balance: { USD: "-80", CZK: "-40" },
+        account_balances: {
+          "Income:Rent": { USD: "-100", CZK: "-50" },
+          "Expenses:Cleaning": { USD: "20", CZK: "10" },
+          "Expenses:Fees": { USD: "0" },
+        },
+      },
+    ],
+  })
+    .unwrap()
+    .with_context({
+      currencies: ["USD", "CZK"],
+      date_format: () => "December 2025",
+    });
+  const group = chart.filter(["CZK"]).bar_groups[0];
+  ok(group);
+  deepEqual(chart.interval_summary(group), [
+    {
+      currency: "USD",
+      net: -80,
+      series: [
+        { account: "Expenses:Cleaning", value: 20 },
+        { account: "Expenses:Fees", value: 0 },
+        { account: "Income:Rent", value: -100 },
+      ],
+    },
+  ]);
+});

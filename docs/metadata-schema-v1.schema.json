@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Fava metadata contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "fields"],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "fields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key"],
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^[a-z][a-zA-Z0-9_-]+$"
+          },
+          "label": {
+            "type": "string"
+          },
+          "type": {
+            "enum": ["string", "enum", "tree", "number", "boolean", "date"],
+            "default": "string"
+          },
+          "scope": {
+            "enum": ["transaction", "posting", "both"],
+            "default": "transaction"
+          },
+          "required": {
+            "type": "boolean",
+            "default": false
+          },
+          "sources": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-zA-Z0-9_-]+$"
+            }
+          },
+          "separator": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1,
+            "default": "/"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": ["type"],
+              "properties": {
+                "type": {
+                  "const": "enum"
+                }
+              }
+            },
+            "then": {
+              "required": ["values"],
+              "properties": {
+                "values": {
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

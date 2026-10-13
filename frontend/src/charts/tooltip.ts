@@ -18,11 +18,25 @@ export class Tooltip {
     this.div.replaceChildren(...nodes);
   }
 
-  /** Position the tooltip. */
+  /** Keep the complete tooltip inside the viewport, including near chart edges. */
   position(left: number, top: number): void {
+    const parent = this.div.parentElement?.getBoundingClientRect();
+    const anchorX = (parent?.left ?? 0) + left;
+    const anchorY = (parent?.top ?? 0) + top;
+    const box = this.div.getBoundingClientRect();
+    const x = Math.max(
+      8,
+      Math.min(anchorX - box.width / 2, window.innerWidth - box.width - 8),
+    );
+    const above = anchorY - box.height - 12;
+    const preferredY = above >= 8 ? above : anchorY + 12;
+    const y = Math.max(
+      8,
+      Math.min(preferredY, window.innerHeight - box.height - 8),
+    );
     this.div.style.opacity = "1";
-    this.div.style.left = `${Math.round(left).toString()}px`;
-    this.div.style.top = `${Math.round(top).toString()}px`;
+    this.div.style.left = `${String(Math.round(x))}px`;
+    this.div.style.top = `${String(Math.round(y))}px`;
   }
 
   /** Hide the tooltip. */
@@ -42,7 +56,11 @@ export class Tooltip {
         this.content(getter());
       };
       const mousemove = (event: MouseEvent) => {
-        this.position(event.offsetX, event.offsetY);
+        const parent = this.div.parentElement?.getBoundingClientRect();
+        this.position(
+          event.clientX - (parent?.left ?? 0),
+          event.clientY - (parent?.top ?? 0),
+        );
       };
       const hide = this.hide.bind(this);
 
