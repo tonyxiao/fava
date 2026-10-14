@@ -10,12 +10,16 @@ import logging
 import shutil
 from abc import ABC
 from abc import abstractmethod
+from collections import Counter
+from collections.abc import Sequence
+from decimal import Decimal
 from functools import wraps
 from http import HTTPStatus
 from inspect import Parameter
 from inspect import signature
 from pathlib import Path
 from pprint import pformat
+from typing import cast
 from typing import TYPE_CHECKING
 from typing import TypeVar
 
@@ -29,8 +33,10 @@ from msgspec import Struct
 from msgspec.structs import astuple
 
 from fava import _structs  # noqa: TC001 - needed for msgspec
+from fava.beans.abc import Directive
 from fava.beans.abc import Document
 from fava.beans.abc import Event
+from fava.beans.abc import Transaction
 from fava.beans.account import account_tester
 from fava.context import g
 from fava.core import EntryNotFoundForHashError
@@ -43,6 +49,7 @@ from fava.core.file import get_entry_slice
 from fava.core.filters import FilterError
 from fava.core.group_entries import group_entries_by_type
 from fava.core.ingest import filepath_in_primary_imports_folder
+from fava.core.inventory import SimpleCounterInventory
 from fava.core.misc import align
 from fava.helpers import FavaAPIError
 from fava.internal_api import ChartApi
@@ -54,15 +61,14 @@ from fava.serialisation import serialise
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable
     from collections.abc import Mapping
-    from collections.abc import Sequence
     from datetime import date
-    from decimal import Decimal
+    from typing import Literal
 
     from flask.wrappers import Response
     from werkzeug.datastructures import FileStorage
 
+    from fava.core import FilteredLedger
     from fava.core.ingest import FileImporters
-    from fava.core.inventory import SimpleCounterInventory
     from fava.core.query import QueryResultTable
     from fava.core.query import QueryResultText
     from fava.core.tree import SerialisedTreeNode
@@ -579,25 +585,405 @@ class JournalPage(Struct, frozen=True):
     page: int
     total_pages: int
     journal: str
+    total_entries: int
+    page_size: int
+    revision: str
+
+
+class AccountDocumentCount(Struct, frozen=True):
+    """Document count for an account."""
+
+    account: str
+    count: int
+
+
+class EventTypeCount(Struct, frozen=True):
+    """Event count for an event type."""
+
+    type: str
+    count: int
+
+
+EventOverview = tuple[
+    Sequence[Event], Sequence[EventTypeCount], Sequence[object]
+]
+
+
+class CommodityPairCount(Struct, frozen=True):
+    """Price point count for a commodity pair."""
+
+    base: str
+    quote: str
+    count: int
+
+
+class DocumentPage(Struct, frozen=True):
+    """A bounded page of document directives and account totals."""
+
+    documents: Sequence[object]
+    page: int
+    page_size: int
+    total_entries: int
+    total_pages: int
+    revision: str
+    accounts: Sequence[AccountDocumentCount] | None
+
+
+class EventPage(Struct, frozen=True):
+    """A bounded page of event directives and chart summary data."""
+
+    events: Sequence[object]
+    page: int
+    page_size: int
+    total_entries: int
+    total_pages: int
+    revision: str
+    types: Sequence[EventTypeCount] | None
+    chart_events: Sequence[object] | None
+    total_events: int | None
+    chart_events_sampled: bool | None
+    chart_total_events: int | None
+
+
+class CommodityPricePage(Struct, frozen=True):
+    """A bounded page of prices for one commodity pair."""
+
+    pairs: Sequence[CommodityPairCount] | None
+    base: str
+    quote: str
+    prices: Sequence[tuple[date, Decimal]]
+    chart_prices: Sequence[tuple[date, Decimal]] | None
+    page: int
+    page_size: int
+    total_entries: int
+    total_pages: int
+    revision: str
+    chart_prices_sampled: bool | None
+    chart_total_prices: int | None
+
+
+_JOURNAL_ENTRY_TYPES = frozenset(
+    {
+        "balance",
+        "budget",
+        "cleared",
+        "close",
+        "commodity",
+        "custom",
+        "discovered",
+        "document",
+        "event",
+        "linked",
+        "metadata",
+        "note",
+        "open",
+        "other",
+        "pad",
+        "pending",
+        "postings",
+        "query",
+        "statement",
+        "transaction",
+    }
+)
+_JOURNAL_SORTS = frozenset({"date", "flag", "narration", "change"})
+_MAX_JOURNAL_PAGE_SIZE = 1000
+_MAX_REPORT_PAGE_SIZE = 500
+_MAX_REPORT_CHART_POINTS = 2000
+JournalRow = (
+    tuple[int, Directive]
+    | tuple[int, Directive, SimpleCounterInventory, SimpleCounterInventory]
+)
+JournalViewCache = Sequence[JournalRow]
+
+
+def _journal_sort_value(
+    entry: Directive,
+    row: JournalRow,
+    sort: Literal["flag", "narration", "change"],
+) -> str | int | Decimal:
+    """Return a sortable journal field for one rendered row."""
+    value: str | int | Decimal
+    if sort == "flag":
+        if isinstance(entry, Transaction):
+            value = entry.flag
+        else:
+            short_type = {
+                "balance": "Bal",
+                "close": "Close",
+                "document": "Doc",
+                "note": "Note",
+                "open": "Open",
+            }
+            entry_type = entry.__class__.__name__.lower()
+            value = short_type.get(entry_type, entry_type[:3])
+    elif sort == "narration":
+        if isinstance(entry, Transaction):
+            tags = "".join(f" #{tag}" for tag in sorted(entry.tags))
+            links = "".join(f" ^{link}" for link in sorted(entry.links))
+            description = " ".join(
+                part for part in (entry.payee, entry.narration) if part
+            )
+            value = f"{description}{tags}{links}".casefold()
+        elif entry.__class__.__name__.lower() == "custom":
+            value = str(getattr(entry, "type", "")).casefold()
+        else:
+            value = str(
+                getattr(entry, "comment", "")
+                or getattr(entry, "name", "")
+                or getattr(entry, "account", "")
+                or ""
+            ).casefold()
+    elif len(row) == 4:
+        value = next(iter(row[2].values()), Decimal(0))
+    elif isinstance(entry, Transaction):
+        value = next(
+            (
+                posting.units.number
+                for posting in entry.postings
+                if posting.units
+            ),
+            Decimal(0),
+        )
+    else:
+        value = Decimal(0)
+    return value
+
+
+def _journal_entry_is_visible(
+    entry: Directive, show_types: frozenset[str]
+) -> bool:
+    """Apply the same type and subtype visibility rules as the journal UI."""
+    entry_type = entry.__class__.__name__.lower()
+    if isinstance(entry, Transaction):
+        flag_type = {"*": "cleared", "!": "pending"}.get(entry.flag, "other")
+        return {"transaction", flag_type} <= show_types
+    if (
+        entry_type == "custom"
+        and getattr(entry, "type", "").casefold() == "budget"
+    ):
+        return {"custom", "budget"} <= show_types
+    if isinstance(entry, Document):
+        subtypes = {
+            tag
+            for tag in (entry.tags or ())
+            if tag in {"linked", "discovered"}
+        }
+        if subtypes:
+            return "document" in show_types and bool(subtypes & show_types)
+    return entry_type in show_types
+
+
+def _validate_report_page(page: int, per_page: int) -> int:
+    """Validate common page parameters and return page size."""
+    if page < 1:
+        detail = "page must be at least 1"
+        raise _report_validation_error(detail)
+    if not 1 <= per_page <= _MAX_REPORT_PAGE_SIZE:
+        detail = f"per_page must be between 1 and {_MAX_REPORT_PAGE_SIZE}"
+        raise _report_validation_error(detail)
+    return per_page
+
+
+def _report_validation_error(detail: str) -> ValidationError:
+    """Build a typed error for a malformed report request."""
+    return ValidationError(detail)
+
+
+def _validate_report_sort(sort: str, choices: Sequence[str]) -> None:
+    """Validate a report sort name against its supported values."""
+    if sort not in choices:
+        detail = f"sort must be one of {', '.join(choices)}"
+        raise _report_validation_error(detail)
+
+
+def _validate_report_order(order: str) -> None:
+    """Validate a report sort direction."""
+    if order not in {"asc", "desc"}:
+        detail = "order must be 'asc' or 'desc'"
+        raise _report_validation_error(detail)
+
+
+def _report_page_slice(
+    page: int, per_page: int, total_entries: int
+) -> tuple[int, int]:
+    """Return a page slice, raising a 404 for a page beyond the result."""
+    total_pages = max(1, (total_entries + per_page - 1) // per_page)
+    if page > total_pages:
+        raise NotFoundError
+    start = (page - 1) * per_page
+    return start, total_pages
+
+
+def _sample_sequence(values: Sequence[T], maximum: int) -> tuple[T, ...]:
+    """Return an evenly spaced chronological sample of a sequence."""
+    if len(values) <= maximum:
+        return tuple(values)
+    last = len(values) - 1
+    return tuple(
+        values[index * last // (maximum - 1)] for index in range(maximum)
+    )
+
+
+def _sample_events(events: Sequence[Event]) -> tuple[Event, ...]:
+    """Sample events across time while retaining each type when possible."""
+    if len(events) <= _MAX_REPORT_CHART_POINTS:
+        return tuple(events)
+
+    indexes_by_type: dict[str, int] = {}
+    for index, event in enumerate(events):
+        indexes_by_type.setdefault(event.type, index)
+    last = len(events) - 1
+
+    # Start with a uniform sample that always includes both boundaries.
+    selected = {
+        sample * last // (_MAX_REPORT_CHART_POINTS - 1)
+        for sample in range(_MAX_REPORT_CHART_POINTS)
+    }
+    selected.update((0, last))
+
+    # Replace nearby, non-boundary sample points with the first occurrence
+    # of each type that the uniform sample missed. Keep the existing sample
+    # size and its overall date coverage.
+    if len(indexes_by_type) <= _MAX_REPORT_CHART_POINTS:
+        protected = {0, last}
+        protected.update(indexes_by_type.values())
+        for index in indexes_by_type.values():
+            if index in selected:
+                continue
+            replaceable = selected - protected
+            if not replaceable:
+                break
+            victim = min(
+                replaceable, key=lambda candidate: abs(candidate - index)
+            )
+            selected.remove(victim)
+            selected.add(index)
+    return tuple(events[index] for index in sorted(selected))
+
+
+def _journal_validation_error(detail: str) -> ValidationError:
+    """Build a typed API error for a malformed journal query."""
+    return ValidationError(detail)
 
 
 @api_endpoint
-def get_journal_page(page: int, order: str) -> JournalPage:
+def get_journal_page(  # noqa: PLR0912
+    page: int,
+    order: str = "desc",
+    sort: str = "date",
+    show: str | None = None,
+    per_page: int = _MAX_JOURNAL_PAGE_SIZE,
+    a: str | None = None,
+) -> JournalPage:
     """Get the HTML contents for a Journal page."""
+    if page < 1:
+        detail = "page must be at least 1"
+        raise _journal_validation_error(detail)
+    if sort not in _JOURNAL_SORTS:
+        detail = f"sort must be one of {', '.join(sorted(_JOURNAL_SORTS))}"
+        raise _journal_validation_error(detail)
+    if not 1 <= per_page <= _MAX_JOURNAL_PAGE_SIZE:
+        detail = f"per_page must be between 1 and {_MAX_JOURNAL_PAGE_SIZE}"
+        raise _journal_validation_error(detail)
+    if order not in {"asc", "desc"}:
+        detail = "order must be 'asc' or 'desc'"
+        raise _journal_validation_error(detail)
+
+    show_types = (
+        None
+        if show is None
+        else frozenset(
+            value
+            for raw_value in show.split(",")
+            if (value := raw_value.strip().lower())
+            and value not in {"metadata", "postings"}
+        )
+    )
+    if show_types is not None and not show_types <= _JOURNAL_ENTRY_TYPES:
+        invalid = ", ".join(sorted(show_types - _JOURNAL_ENTRY_TYPES))
+        detail = f"unknown journal entry type(s): {invalid}"
+        raise _journal_validation_error(detail)
+
     journal_table_contents = get_template_attribute(
         "_journal_table.html", "journal_table_contents"
     )
     if page == 1:
         g.ledger.changed()
-    journal_page = g.filtered.paginate_journal(
-        page, order="asc" if order == "asc" else "desc"
+
+    include_children = g.ledger.fava_options.account_journal_include_children
+    cache_key = (
+        g.filtered,
+        g.filtered.revision,
+        a,
+        str(g.conversion),
+        include_children if a else False,
+        tuple(sorted(show_types)) if show_types is not None else None,
+        sort,
+        order,
     )
-    if journal_page is None:
+    view_cache = cast(
+        "JournalViewCache | None",
+        g.ledger.get_journal_view_cache(cache_key),
+    )
+    records: Sequence[JournalRow]
+    if view_cache is None:
+        prepared: list[JournalRow]
+        if a:
+            prepared = list(
+                g.ledger.account_journal(
+                    g.filtered,
+                    a,
+                    g.conversion,
+                    with_children=include_children,
+                )
+            )
+        else:
+            prepared = [
+                (index, entry)
+                for index, entry in enumerate(
+                    g.filtered.entries_without_prices
+                )
+            ]
+
+        if show_types is not None:
+            prepared = [
+                row
+                for row in prepared
+                if _journal_entry_is_visible(row[1], show_types)
+            ]
+
+        prepared.sort(key=lambda row: row[0], reverse=order == "desc")
+        if sort != "date":
+            prepared.sort(
+                key=lambda row: _journal_sort_value(
+                    row[1],
+                    row,
+                    cast("Literal['flag', 'narration', 'change']", sort),
+                ),
+                reverse=order == "desc",
+            )
+        records = tuple(prepared)
+        g.ledger.set_journal_view_cache(cache_key, records)
+    else:
+        records = view_cache
+
+    total_entries = len(records)
+    total_pages = max(1, (total_entries + per_page - 1) // per_page)
+    if page > total_pages:
         raise NotFoundError
+    start = (page - 1) * per_page
+    page_entries = records[start : start + per_page]
     return JournalPage(
         page=page,
-        total_pages=journal_page.total_pages,
-        journal=journal_table_contents(journal_page.entries),
+        total_pages=total_pages,
+        journal=journal_table_contents(
+            page_entries,
+            show_change_and_balance=bool(a),
+        ),
+        total_entries=total_entries,
+        page_size=per_page,
+        revision=str(g.filtered.revision),
     )
 
 
@@ -606,6 +992,135 @@ def get_events() -> Sequence[object]:
     """Get all (filtered) events."""
     g.ledger.changed()
     return [serialise(e) for e in g.filtered.entries if isinstance(e, Event)]
+
+
+@api_endpoint
+def get_events_page(
+    page: int = 1,
+    per_page: int = 200,
+    sort: str = "date",
+    order: str = "desc",
+    event_type: str | None = None,
+    include_overview: bool = True,  # noqa: FBT001, FBT002
+) -> EventPage:
+    """Get a page of events and a bounded overview for charts."""
+    _validate_report_sort(sort, ("date", "description", "type"))
+    _validate_report_order(order)
+    _validate_report_page(page, per_page)
+    g.ledger.changed()
+
+    filtered = g.filtered
+    revision = filtered.revision
+    rows_key = (filtered, revision)
+    all_events = cast(
+        "Sequence[Event] | None",
+        g.ledger.get_report_view_cache("event_rows", rows_key),
+    )
+    if all_events is None:
+        all_events = tuple(
+            entry for entry in filtered.entries if isinstance(entry, Event)
+        )
+        g.ledger.set_report_view_cache("event_rows", rows_key, all_events)
+
+    event_type_counts: Sequence[EventTypeCount] | None = None
+    serialized_chart_events: Sequence[object] | None = None
+    chart_event_count: int | None = None
+    sampled: bool | None = None
+    if include_overview:
+        chart_key = (filtered, revision)
+        cached_event_overview = cast(
+            "EventOverview | None",
+            g.ledger.get_report_view_cache("event_overview", chart_key),
+        )
+        if cached_event_overview is None:
+            chart_events = tuple(
+                sorted(all_events, key=lambda entry: entry.date)
+            )
+            counts = Counter(event.type for event in chart_events)
+            event_type_counts = tuple(
+                EventTypeCount(type=name, count=count)
+                for name, count in sorted(counts.items())
+            )
+            sample = _sample_events(chart_events)
+            serialized_chart_events = tuple(
+                serialise(event) for event in sample
+            )
+            cached_event_overview = (
+                chart_events,
+                event_type_counts,
+                serialized_chart_events,
+            )
+            g.ledger.set_report_view_cache(
+                "event_overview", chart_key, cached_event_overview
+            )
+        chart_events, event_type_counts, serialized_chart_events = (
+            cached_event_overview
+        )
+        chart_event_count = len(chart_events)
+        sampled = len(chart_events) > len(serialized_chart_events)
+
+    table_key = (filtered, revision, sort, order)
+    events = cast(
+        "Sequence[Event] | None",
+        g.ledger.get_report_view_cache("events", table_key),
+    )
+    if events is None:
+        if sort == "date":
+            events = tuple(
+                sorted(
+                    all_events,
+                    key=lambda entry: entry.date,
+                    reverse=order == "desc",
+                )
+            )
+        elif sort == "description":
+            events = tuple(
+                sorted(
+                    all_events,
+                    key=lambda entry: entry.description.casefold(),
+                    reverse=order == "desc",
+                )
+            )
+        else:
+            events = tuple(
+                sorted(
+                    all_events,
+                    key=lambda entry: entry.type.casefold(),
+                    reverse=order == "desc",
+                )
+            )
+        g.ledger.set_report_view_cache("events", table_key, events)
+
+    subset_key = (filtered, revision, event_type or "", sort, order)
+    selected_events = cast(
+        "Sequence[Event] | None",
+        g.ledger.get_report_view_cache("event_subsets", subset_key),
+    )
+    if selected_events is None:
+        selected_events = (
+            events
+            if event_type is None or event_type == ""
+            else tuple(event for event in events if event.type == event_type)
+        )
+        g.ledger.set_report_view_cache(
+            "event_subsets", subset_key, selected_events
+        )
+    total_entries = len(selected_events)
+    start, total_pages = _report_page_slice(page, per_page, total_entries)
+    page_events = selected_events[start : start + per_page]
+    return EventPage(
+        events=[serialise(event) for event in page_events],
+        page=page,
+        page_size=per_page,
+        total_entries=total_entries,
+        total_pages=total_pages,
+        revision=str(revision),
+        types=event_type_counts,
+        chart_events=serialized_chart_events,
+        total_events=chart_event_count,
+        chart_events_sampled=sampled,
+        chart_total_events=chart_event_count,
+    )
 
 
 @api_endpoint
@@ -622,6 +1137,91 @@ def get_documents() -> Sequence[object]:
     return [
         serialise(e) for e in g.filtered.entries if isinstance(e, Document)
     ]
+
+
+@api_endpoint
+def get_documents_page(
+    page: int = 1,
+    per_page: int = 200,
+    sort: str = "date",
+    order: str = "desc",
+    a: str | None = None,
+    include_overview: bool = True,  # noqa: FBT001, FBT002
+) -> DocumentPage:
+    """Get a bounded page of documents with account totals."""
+    _validate_report_sort(sort, ("date", "name"))
+    _validate_report_order(order)
+    _validate_report_page(page, per_page)
+    g.ledger.changed()
+
+    filtered = g.filtered
+    revision = filtered.revision
+    cache_key = (filtered, revision, sort, order)
+    cached_documents = cast(
+        "tuple[Sequence[Document], Sequence[AccountDocumentCount]] | None",
+        g.ledger.get_report_view_cache("documents", cache_key),
+    )
+    if cached_documents is None:
+        unsorted_documents = [
+            entry for entry in filtered.entries if isinstance(entry, Document)
+        ]
+
+        def document_name(entry: Document) -> str:
+            filename = Path(entry.filename).name
+            if filename.startswith(entry.date.isoformat()):
+                filename = filename[11:]
+            return filename.casefold()
+
+        sort_key = (
+            (lambda entry: entry.date) if sort == "date" else document_name
+        )
+        documents = tuple(
+            sorted(
+                unsorted_documents,
+                key=sort_key,
+                reverse=order == "desc",
+            )
+        )
+        account_counts = Counter(document.account for document in documents)
+        accounts = tuple(
+            AccountDocumentCount(account=account, count=count)
+            for account, count in sorted(account_counts.items())
+        )
+        cached_documents = (documents, accounts)
+        g.ledger.set_report_view_cache(
+            "documents", cache_key, cached_documents
+        )
+    documents, accounts = cached_documents
+    subset_key = (filtered, revision, a or "", sort, order)
+    selected_documents = cast(
+        "Sequence[Document] | None",
+        g.ledger.get_report_view_cache("document_subsets", subset_key),
+    )
+    if selected_documents is None:
+        if a:
+            is_selected_account = account_tester(a, with_children=True)
+            selected_documents = tuple(
+                document
+                for document in documents
+                if is_selected_account(document.account)
+            )
+        else:
+            selected_documents = documents
+        g.ledger.set_report_view_cache(
+            "document_subsets", subset_key, selected_documents
+        )
+    total_entries = len(selected_documents)
+    start, total_pages = _report_page_slice(page, per_page, total_entries)
+    page_documents = selected_documents[start : start + per_page]
+    return DocumentPage(
+        documents=[serialise(document) for document in page_documents],
+        page=page,
+        page_size=per_page,
+        total_entries=total_entries,
+        total_pages=total_pages,
+        revision=str(revision),
+        accounts=accounts if include_overview else None,
+    )
 
 
 class Options(Struct, frozen=True):
@@ -685,6 +1285,151 @@ def get_commodities() -> Sequence[CommodityPairWithPrices]:
             ret.append(CommodityPairWithPrices(base, quote, prices))
 
     return ret
+
+
+def _commodity_pair_counts(
+    filtered: FilteredLedger,
+    revision: int,
+    pairs: Sequence[tuple[str, str]],
+) -> Sequence[CommodityPairCount]:
+    """Get cached price point counts for each commodity pair."""
+    cache_key = (filtered, revision)
+    cached = cast(
+        "Sequence[CommodityPairCount] | None",
+        g.ledger.get_report_view_cache("commodity_pairs", cache_key),
+    )
+    if cached is not None:
+        return cached
+
+    counts = tuple(
+        CommodityPairCount(
+            base=base,
+            quote=quote,
+            count=len(filtered.prices(base, quote)),
+        )
+        for base, quote in pairs
+    )
+    g.ledger.set_report_view_cache("commodity_pairs", cache_key, counts)
+    return counts
+
+
+def _commodity_price_views(
+    filtered: FilteredLedger,
+    revision: int,
+    base: str,
+    quote: str,
+    sort: str,
+    order: str,
+) -> tuple[Sequence[tuple[date, Decimal]], Sequence[tuple[date, Decimal]]]:
+    """Get cached chronological and requested-order price views."""
+    canonical_key = (filtered, revision, base, quote, "date", "asc")
+    pair_prices = cast(
+        "Sequence[tuple[date, Decimal]] | None",
+        g.ledger.get_report_view_cache("commodities", canonical_key),
+    )
+    if pair_prices is None:
+        pair_prices = tuple(filtered.prices(base, quote))
+        g.ledger.set_report_view_cache(
+            "commodities", canonical_key, pair_prices
+        )
+
+    requested_key = (filtered, revision, base, quote, sort, order)
+    ordered_prices = cast(
+        "Sequence[tuple[date, Decimal]] | None",
+        g.ledger.get_report_view_cache("commodities", requested_key),
+    )
+    if ordered_prices is not None:
+        return pair_prices, ordered_prices
+
+    ordered_prices = tuple(
+        sorted(
+            pair_prices,
+            key=(lambda point: point[0])
+            if sort == "date"
+            else (lambda point: point[1]),
+            reverse=order == "desc",
+        )
+    )
+    g.ledger.set_report_view_cache(
+        "commodities", requested_key, ordered_prices
+    )
+    return pair_prices, ordered_prices
+
+
+@api_endpoint
+def get_commodity_report(
+    base: str | None = None,
+    quote: str | None = None,
+    page: int = 1,
+    per_page: int = 200,
+    sort: str = "date",
+    order: str = "desc",
+    include_overview: bool = True,  # noqa: FBT001, FBT002
+) -> CommodityPricePage:
+    """Get one pair's prices in bounded pages with a chart overview."""
+    if (base is None) != (quote is None):
+        detail = "base and quote must be provided together"
+        raise _report_validation_error(detail)
+    _validate_report_sort(sort, ("date", "price"))
+    _validate_report_order(order)
+    _validate_report_page(page, per_page)
+    g.ledger.changed()
+
+    filtered = g.filtered
+    revision = filtered.revision
+    commodity_pairs = g.ledger.commodity_pairs()
+    if (
+        base is not None
+        and quote is not None
+        and (base, quote) not in commodity_pairs
+    ):
+        detail = f"unknown commodity pair: {base}/{quote}"
+        raise _report_validation_error(detail)
+
+    pair_counts = _commodity_pair_counts(filtered, revision, commodity_pairs)
+    visible_pairs = [pair for pair in pair_counts if pair.count]
+    if base is None or quote is None:
+        if visible_pairs:
+            base = visible_pairs[0].base
+            quote = visible_pairs[0].quote
+        else:
+            base = quote = ""
+
+    if base and quote:
+        pair_prices, ordered_prices = _commodity_price_views(
+            filtered, revision, base, quote, sort, order
+        )
+    else:
+        pair_prices = ()
+        ordered_prices = ()
+
+    total_entries = len(ordered_prices)
+    start, total_pages = _report_page_slice(page, per_page, total_entries)
+    page_prices = ordered_prices[start : start + per_page]
+    chart_prices = (
+        _sample_sequence(pair_prices, _MAX_REPORT_CHART_POINTS)
+        if include_overview
+        else None
+    )
+    chart_prices_sampled = (
+        len(pair_prices) > len(chart_prices)
+        if chart_prices is not None
+        else None
+    )
+    return CommodityPricePage(
+        pairs=visible_pairs if include_overview else None,
+        base=base,
+        quote=quote,
+        prices=page_prices,
+        chart_prices=chart_prices,
+        page=page,
+        page_size=per_page,
+        total_entries=total_entries,
+        total_pages=total_pages,
+        revision=str(revision),
+        chart_prices_sampled=chart_prices_sampled,
+        chart_total_prices=len(pair_prices) if include_overview else None,
+    )
 
 
 class TreeReport(Struct, frozen=True):
@@ -795,7 +1540,9 @@ class AccountReportTree(Struct, frozen=True):
 
 @api_endpoint
 def get_account_report(
-    a: str = "", r: str = ""
+    a: str = "",
+    r: str = "",
+    include_journal: bool = True,  # noqa: FBT001, FBT002
 ) -> AccountReportJournal | AccountReportTree:
     """Get the data for the account report."""
     g.ledger.changed()
@@ -864,6 +1611,9 @@ def get_account_report(
             budgets=budgets,
         )
 
+    if not include_journal:
+        return AccountReportJournal(charts, journal="")
+
     journal_table_contents = get_template_attribute(
         "_journal_table.html", "journal_table_contents"
     )
@@ -871,7 +1621,7 @@ def get_account_report(
         g.ledger.account_journal(
             g.filtered,
             a,
-            g.conv,
+            g.conversion,
             with_children=g.ledger.fava_options.account_journal_include_children,
         )
     )

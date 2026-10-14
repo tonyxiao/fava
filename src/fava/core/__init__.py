@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date
 from datetime import timedelta
 from functools import cached_property
 from functools import lru_cache
-from itertools import islice
 from itertools import takewhile
 from pathlib import Path
+from typing import cast
 from typing import TYPE_CHECKING
 
 from beancount.utils.encryption import is_encrypted_file
@@ -48,11 +49,9 @@ from fava.core.tree import Tree
 from fava.core.watcher import Watcher
 from fava.core.watcher import WatchfilesWatcher
 from fava.helpers import FavaAPIError
-from fava.util import listify
 from fava.util.date import dateranges
 
 if TYPE_CHECKING:  # pragma: no cover
-    from collections.abc import Iterable
     from collections.abc import Mapping
     from collections.abc import Sequence
     from decimal import Decimal
@@ -67,6 +66,15 @@ if TYPE_CHECKING:  # pragma: no cover
     from fava.helpers import BeancountError
     from fava.util.date import DateRange
     from fava.util.date import Interval
+
+    AccountJournal = Sequence[
+        tuple[
+            int,
+            Directive,
+            SimpleCounterInventory,
+            SimpleCounterInventory,
+        ]
+    ]
 
 
 class EntryNotFoundForHashError(FavaAPIError):
@@ -111,6 +119,7 @@ class FilteredLedger:
         "date_range",
         "entries",
         "ledger",
+        "revision",
     )
     _date_first: date | None
     _date_last: date | None
@@ -132,16 +141,19 @@ class FilteredLedger:
             time: The time filter.
         """
         self.ledger = ledger
+        # Pin the revision to the same ledger snapshot as the filtered entries.
+        # A reload between rendering and serialization must not make old rows
+        # appear to belong to the new ledger revision.
+        self.revision = ledger.mtime
         self.date_range: DateRange | None = None
         self._pages: (
             tuple[
                 int,
                 Literal["asc", "desc"],
-                list[Sequence[tuple[int, Directive]]],
+                Sequence[tuple[int, Directive]],
             ]
             | None
         ) = None
-
         entries = ledger.all_entries
         if account:
             entries = AccountFilter(account).apply(entries)
@@ -268,34 +280,33 @@ class FilteredLedger:
             directive) tuples in reverse chronological order and the total
             number of pages.
         """
+        if page < 1 or per_page < 1:
+            return None
         if (
             self._pages is None
             or self._pages[0] != per_page
             or self._pages[1] != order
         ):
-            pages: list[Sequence[tuple[int, Directive]]] = []
             enumerated = list(enumerate(self.entries_without_prices))
-            entries = (
-                iter(enumerated) if order == "asc" else reversed(enumerated)
-            )
-            while batch := tuple(islice(entries, per_page)):
-                pages.append(batch)
-            if not pages:
-                pages.append([])
-            self._pages = (per_page, order, pages)
-        _per_pages, _order, pages = self._pages
-        total = len(pages)
+            if order == "desc":
+                enumerated.reverse()
+            self._pages = (per_page, order, enumerated)
+        _per_pages, _order, entries = self._pages
+        total = max(1, (len(entries) + per_page - 1) // per_page)
         if page > total:
             return None
-        return JournalPage(pages[page - 1], total)
+        start = (page - 1) * per_page
+        return JournalPage(entries[start : start + per_page], total)
 
 
 class FavaLedger:
     """Interface for a Beancount ledger."""
 
     __slots__ = (
+        "_account_journal_cache",
         "_is_encrypted",
-        "accounts",
+        "_journal_view_cache",
+        "_report_view_caches",
         "accounts",
         "all_entries",
         "all_entries_by_type",
@@ -384,6 +395,17 @@ class FavaLedger:
         #: The path to the main Beancount file.
         self.beancount_file_path = path
         self._is_encrypted = is_encrypted_file(path)
+        # Full account journals and sorted journal views can each hold up to
+        # the whole ledger. Bound these caches across filtered scopes rather
+        # than retaining one copy on each cached FilteredLedger.
+        self._account_journal_cache: OrderedDict[object, object] = (
+            OrderedDict()
+        )
+        self._journal_view_cache: OrderedDict[object, object] = OrderedDict()
+        # Report caches contain sorted ledger-wide row references. Keep only
+        # two filter/sort variants for each report so report pages do not
+        # retain an unbounded copy of every filtered ledger view.
+        self._report_view_caches: dict[str, OrderedDict[object, object]] = {}
         self.get_filtered = lru_cache(maxsize=16)(self._get_filtered)
         self.get_entry = lru_cache(maxsize=16)(self._get_entry)
 
@@ -411,6 +433,9 @@ class FavaLedger:
         )
         self.get_filtered.cache_clear()
         self.get_entry.cache_clear()
+        self._account_journal_cache.clear()
+        self._journal_view_cache.clear()
+        self._report_view_caches.clear()
 
         self.all_entries_by_type = group_entries_by_type(self.all_entries)
         self.prices = FavaPriceMap(self.all_entries_by_type.Price)
@@ -562,7 +587,6 @@ class FavaLedger:
 
         return interval_balances, interval_ranges
 
-    @listify
     def account_journal(
         self,
         filtered: FilteredLedger,
@@ -570,7 +594,7 @@ class FavaLedger:
         conversion: str | Conversion,
         *,
         with_children: bool,
-    ) -> Iterable[
+    ) -> Sequence[
         tuple[int, Directive, SimpleCounterInventory, SimpleCounterInventory]
     ]:
         """Journal for an account.
@@ -582,16 +606,34 @@ class FavaLedger:
             with_children: Whether to include postings of subaccounts of
                            the account.
 
-        Yields:
-            Tuples of ``(index, entry, change, balance)``.
+        Returns:
+            Tuples of ``(index, entry, change, balance)`` in journal order.
         """
         conv = conversion_from_str(conversion)
+        conversion_key = (
+            conversion
+            if isinstance(conversion, str)
+            else (type(conv), tuple(getattr(conv, "_currencies", ())))
+        )
+        cache_key = (
+            filtered,
+            filtered.revision,
+            account_name,
+            conversion_key,
+            with_children,
+        )
+        cached = self._account_journal_cache.get(cache_key)
+        if cached is not None:
+            self._account_journal_cache.move_to_end(cache_key)
+            return cast("AccountJournal", cached)
+
         relevant_account = account_tester(
             account_name, with_children=with_children
         )
 
         prices = self.prices
         balance = CounterInventory()
+        rows = []
         for index, entry in enumerate(filtered.entries_without_prices):
             change = CounterInventory()
             entry_is_relevant = False
@@ -606,12 +648,53 @@ class FavaLedger:
                 entry_is_relevant = True
 
             if entry_is_relevant:
-                yield (
+                row = (
                     index,
                     entry,
                     conv.apply(change, prices, entry.date),
                     conv.apply(balance, prices, entry.date),
                 )
+                rows.append(row)
+        rows_tuple = tuple(rows)
+        self._account_journal_cache[cache_key] = rows_tuple
+        self._account_journal_cache.move_to_end(cache_key)
+        if len(self._account_journal_cache) > 2:
+            self._account_journal_cache.popitem(last=False)
+        return rows_tuple
+
+    def get_journal_view_cache(self, key: object) -> object | None:
+        """Get a cached sorted journal view and mark it recently used."""
+        cached = self._journal_view_cache.get(key)
+        if cached is not None:
+            self._journal_view_cache.move_to_end(key)
+        return cached
+
+    def set_journal_view_cache(self, key: object, value: object) -> None:
+        """Cache a sorted journal view, retaining at most two scopes."""
+        self._journal_view_cache[key] = value
+        self._journal_view_cache.move_to_end(key)
+        if len(self._journal_view_cache) > 2:
+            self._journal_view_cache.popitem(last=False)
+
+    def get_report_view_cache(self, report: str, key: object) -> object | None:
+        """Get a cached sorted report view and mark it recently used."""
+        cache = self._report_view_caches.get(report)
+        if cache is None:
+            return None
+        cached = cache.get(key)
+        if cached is not None:
+            cache.move_to_end(key)
+        return cached
+
+    def set_report_view_cache(
+        self, report: str, key: object, value: object
+    ) -> None:
+        """Cache a sorted report view, retaining at most two variants."""
+        cache = self._report_view_caches.setdefault(report, OrderedDict())
+        cache[key] = value
+        cache.move_to_end(key)
+        if len(cache) > 2:
+            cache.popitem(last=False)
 
     def _get_entry(self, entry_hash: str) -> Directive:
         """Find an entry.

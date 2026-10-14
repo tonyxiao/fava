@@ -1,21 +1,27 @@
 from __future__ import annotations
 
 import datetime
+from decimal import Decimal
 from difflib import Differ
 from http import HTTPStatus
 from importlib.metadata import version
 from io import BytesIO
 from pathlib import Path
+from typing import Any
+from typing import cast
 from typing import TYPE_CHECKING
 
 import pytest
+from beancount.core import data
 from msgspec.json import Decoder
 
 from fava.beans.funcs import hash_entry
 from fava.context import g
+from fava.core import FilteredLedger
 from fava.core.file import _sha256_str
 from fava.core.file import get_entry_slice
 from fava.core.misc import align
+from fava.json_api import _sample_events
 from fava.json_api import build_json_body_decoder
 from fava.json_api import build_query_string_decoder
 from fava.json_api import ProblemDetails
@@ -23,10 +29,13 @@ from fava.json_api import SuccessResponse
 from fava.json_api import ValidationError
 
 if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Sequence
+
     from flask import Flask
     from flask.testing import FlaskClient
     from werkzeug.test import TestResponse
 
+    from fava.beans.abc import Event
     from fava.core import FavaLedger
 
     from .conftest import GetFavaLedger
@@ -118,7 +127,7 @@ def assert_api_error(
 
 def assert_api_success(
     response: TestResponse, data: object | None = None
-) -> object:
+) -> Any:  # noqa: ANN401 - API payloads are intentionally untyped JSON.
     """Asserts that the request was successful and contains the data."""
     assert response.status_code == HTTPStatus.OK.value
     json = _success_decoder.decode(response.data)
@@ -980,6 +989,519 @@ def test_api_commodities_empty(
     assert not data
 
 
+def test_api_documents_page_scope_and_pagination(
+    test_client: FlaskClient,
+) -> None:
+    first = assert_api_success(
+        test_client.get(
+            "/example/api/documents_page",
+            query_string={"page": 1, "per_page": 1, "a": "Expenses"},
+        )
+    )
+    second = assert_api_success(
+        test_client.get(
+            "/example/api/documents_page",
+            query_string={"page": 2, "per_page": 1, "a": "Expenses"},
+        )
+    )
+    assert first["total_entries"] == 3
+    assert first["page_size"] == 1
+    assert len(first["documents"]) == len(second["documents"]) == 1
+    assert first["documents"][0] != second["documents"][0]
+    assert first["accounts"] == [{"account": "Expenses:Food", "count": 3}]
+
+    # `account` is the global ledger filter; `a` is applied locally after
+    # account totals are calculated.
+    filtered = assert_api_success(
+        test_client.get(
+            "/example/api/documents_page",
+            query_string={
+                "account": "Expenses:Food",
+                "a": "Expenses:Other",
+                "per_page": 1,
+            },
+        )
+    )
+    assert filtered["total_entries"] == 0
+    assert filtered["accounts"] == [{"account": "Expenses:Food", "count": 3}]
+
+
+def test_report_page_overviews_can_be_omitted(
+    test_client: FlaskClient,
+) -> None:
+    for path, params, overview_fields in (
+        ("/example/api/documents_page", {"a": "Expenses"}, ("accounts",)),
+        (
+            "/long-example/api/events_page",
+            {},
+            (
+                "types",
+                "chart_events",
+                "total_events",
+                "chart_events_sampled",
+                "chart_total_events",
+            ),
+        ),
+        (
+            "/example/api/commodity_report",
+            {"base": "USD", "quote": "EUR"},
+            (
+                "pairs",
+                "chart_prices",
+                "chart_prices_sampled",
+                "chart_total_prices",
+            ),
+        ),
+    ):
+        first = assert_api_success(
+            test_client.get(
+                path,
+                query_string={**params, "page": 1, "per_page": 1},
+            )
+        )
+        later = assert_api_success(
+            test_client.get(
+                path,
+                query_string={
+                    **params,
+                    "page": 2,
+                    "per_page": 1,
+                    "include_overview": "false",
+                },
+            )
+        )
+        assert all(first[field] is not None for field in overview_fields)
+        assert all(later[field] is None for field in overview_fields)
+
+
+def test_report_selector_caches_are_bounded(
+    test_client: FlaskClient,
+    get_ledger: GetFavaLedger,
+) -> None:
+    ledger = get_ledger("long-example")
+    ledger._report_view_caches.clear()
+    document_accounts = ("Expenses", "Assets", "Liabilities")
+    event_types = ("employer", "location", "residence")
+    try:
+        for account in document_accounts:
+            assert_api_success(
+                test_client.get(
+                    "/long-example/api/documents_page",
+                    query_string={"a": account},
+                )
+            )
+        document_cache = ledger._report_view_caches["document_subsets"]
+        assert len(document_cache) == 2
+        document_keys = cast(
+            "list[tuple[object, ...]]", list(document_cache.keys())
+        )
+        assert {key[2] for key in document_keys} == set(document_accounts[-2:])
+
+        for event_type in event_types:
+            assert_api_success(
+                test_client.get(
+                    "/long-example/api/events_page",
+                    query_string={"event_type": event_type},
+                )
+            )
+        event_cache = ledger._report_view_caches["event_subsets"]
+        assert len(event_cache) == 2
+        event_keys = cast("list[tuple[object, ...]]", list(event_cache.keys()))
+        assert {key[2] for key in event_keys} == set(event_types[-2:])
+    finally:
+        ledger._report_view_caches.clear()
+
+
+def test_api_documents_page_validates_query(
+    test_client: FlaskClient,
+) -> None:
+    response = test_client.get("/example/api/documents_page?sort=bogus")
+    assert_api_error(
+        response,
+        "Invalid API request: sort must be one of date, name",
+        status=HTTPStatus.BAD_REQUEST,
+    )
+
+
+def test_api_documents_page_sorts_displayed_names(
+    test_client: FlaskClient,
+    get_ledger: GetFavaLedger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = get_ledger("example")
+    original_entries = ledger.all_entries
+    date = datetime.date(2012, 12, 15)
+    extra_documents = (
+        data.Document(
+            {},
+            date,
+            "Expenses:Food",
+            "2012-12-15 zebra.pdf",
+            frozenset(),
+            frozenset(),
+        ),
+        data.Document(
+            {}, date, "Expenses:Food", "alpha.pdf", frozenset(), frozenset()
+        ),
+    )
+    ledger._report_view_caches.clear()
+    monkeypatch.setattr(
+        ledger, "all_entries", (*original_entries, *extra_documents)
+    )
+    ledger.get_filtered.cache_clear()
+    try:
+        ascending = assert_api_success(
+            test_client.get(
+                "/example/api/documents_page",
+                query_string={"sort": "name", "order": "asc", "per_page": 10},
+            )
+        )
+        descending = assert_api_success(
+            test_client.get(
+                "/example/api/documents_page",
+                query_string={"sort": "name", "order": "desc", "per_page": 10},
+            )
+        )
+
+        def displayed_name(document: dict[str, Any]) -> str:
+            basename = Path(document["filename"]).name
+            if basename.startswith(document["date"]):
+                basename = basename[11:]
+            return basename.casefold()
+
+        names = [
+            displayed_name(document) for document in ascending["documents"]
+        ]
+        assert names == sorted(names)
+        assert names == [
+            displayed_name(document)
+            for document in reversed(descending["documents"])
+        ]
+        assert "zebra.pdf" in names
+    finally:
+        ledger.get_filtered.cache_clear()
+        ledger._report_view_caches.clear()
+
+
+def test_api_empty_report_pages_and_invalid_pagination(
+    test_client: FlaskClient,
+) -> None:
+    for endpoint in ("documents_page", "events_page", "commodity_report"):
+        empty = assert_api_success(
+            test_client.get(f"/long-example/api/{endpoint}?time=3000")
+        )
+        assert empty["total_entries"] == 0
+        assert empty["total_pages"] == 1
+        for page in (0, 2):
+            response = test_client.get(
+                f"/long-example/api/{endpoint}",
+                query_string={"time": "3000", "page": page},
+            )
+            if page == 0:
+                assert_api_error(
+                    response,
+                    "Invalid API request: page must be at least 1",
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            else:
+                assert_api_error(response, status=HTTPStatus.NOT_FOUND)
+
+    bad_order = test_client.get("/long-example/api/events_page?order=sideways")
+    assert_api_error(
+        bad_order,
+        "Invalid API request: order must be 'asc' or 'desc'",
+        status=HTTPStatus.BAD_REQUEST,
+    )
+    bad_page_size = test_client.get(
+        "/long-example/api/documents_page?per_page=0"
+    )
+    assert_api_error(
+        bad_page_size,
+        "Invalid API request: per_page must be between 1 and 500",
+        status=HTTPStatus.BAD_REQUEST,
+    )
+    incomplete_pair = test_client.get(
+        "/long-example/api/commodity_report?base=USD"
+    )
+    assert_api_error(
+        incomplete_pair,
+        "Invalid API request: base and quote must be provided together",
+        status=HTTPStatus.BAD_REQUEST,
+    )
+
+
+def test_api_events_page_and_sort_cache_keys(
+    test_client: FlaskClient,
+) -> None:
+    desc = assert_api_success(
+        test_client.get(
+            "/long-example/api/events_page",
+            query_string={"per_page": 1, "sort": "date", "order": "desc"},
+        )
+    )
+    asc = assert_api_success(
+        test_client.get(
+            "/long-example/api/events_page",
+            query_string={"per_page": 1, "sort": "date", "order": "asc"},
+        )
+    )
+    assert desc["total_events"] >= 2
+    assert desc["total_entries"] == desc["total_events"]
+    assert len(desc["chart_events"]) == desc["total_events"]
+    assert desc["chart_events_sampled"] is False
+    assert asc["events"][0]["date"] <= desc["events"][0]["date"]
+    assert (
+        sum(event_type["count"] for event_type in asc["types"])
+        == asc["total_events"]
+    )
+
+    employer = assert_api_success(
+        test_client.get(
+            "/long-example/api/events_page",
+            query_string={"event_type": "employer", "per_page": 1},
+        )
+    )
+    assert employer["total_events"] == asc["total_events"]
+    assert employer["total_entries"] == 1
+    assert employer["events"][0]["type"] == "employer"
+
+
+@pytest.mark.parametrize(
+    ("sort", "order"),
+    [("description", "asc"), ("description", "desc"), ("type", "asc")],
+)
+def test_api_events_page_sorts_all_columns(
+    test_client: FlaskClient,
+    sort: str,
+    order: str,
+) -> None:
+    response = assert_api_success(
+        test_client.get(
+            "/long-example/api/events_page",
+            query_string={"sort": sort, "order": order, "per_page": 100},
+        )
+    )
+    values = [event[sort].casefold() for event in response["events"]]
+    assert values == sorted(values, reverse=order == "desc")
+
+
+def test_api_events_page_samples_large_chart_and_preserves_types(
+    test_client: FlaskClient,
+    get_ledger: GetFavaLedger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = get_ledger("long-example")
+    event_types = ("rare", "common")
+    events = tuple(
+        data.Event(
+            {},
+            datetime.date(2000, 1, 1) + datetime.timedelta(days=index),
+            event_types[0] if index == 1 else event_types[1],
+            f"event-{index:04}",
+        )
+        for index in range(4001)
+    )
+    ledger._report_view_caches.clear()
+    monkeypatch.setattr(ledger, "all_entries", events)
+    ledger.get_filtered.cache_clear()
+    try:
+        report = assert_api_success(
+            test_client.get("/long-example/api/events_page?per_page=1")
+        )
+        assert report["total_events"] == 4001
+        assert report["chart_events_sampled"] is True
+        assert report["chart_total_events"] == 4001
+        assert len(report["chart_events"]) == 2000
+        assert {event["type"] for event in report["chart_events"]} == set(
+            event_types
+        )
+        dates = [
+            datetime.date.fromisoformat(event["date"])
+            for event in report["chart_events"]
+        ]
+        assert dates[0] == datetime.date(2000, 1, 1)
+        assert dates[-1] == datetime.date(2000, 1, 1) + datetime.timedelta(
+            days=4000
+        )
+        assert dates[1] == datetime.date(2000, 1, 2)
+    finally:
+        ledger.get_filtered.cache_clear()
+        ledger._report_view_caches.clear()
+
+
+def test_sample_events_caps_samples_when_type_count_exceeds_limit() -> None:
+    events = tuple(
+        data.Event(
+            {},
+            datetime.date(2000, 1, 1) + datetime.timedelta(days=index),
+            f"type-{index}",
+            f"event-{index}",
+        )
+        for index in range(2001)
+    )
+
+    sampled = _sample_events(cast("Sequence[Event]", events))
+
+    assert len(sampled) == 2000
+    assert sampled[0] == events[0]
+    assert sampled[-1] == events[-1]
+
+
+def test_sample_events_with_fully_protected_indices_stays_bounded() -> None:
+    events = tuple(
+        data.Event(
+            {},
+            datetime.date(2000, 1, 1) + datetime.timedelta(days=index),
+            "shared" if index in {0, 2000} else f"type-{index}",
+            f"event-{index}",
+        )
+        for index in range(2001)
+    )
+
+    sampled = _sample_events(cast("Sequence[Event]", events))
+
+    assert len(sampled) == 2000
+    assert sampled[0] == events[0]
+    assert sampled[-1] == events[-1]
+
+
+@pytest.mark.parametrize("order", ["asc", "desc"])
+def test_api_commodity_report_sorts_by_price(
+    test_client: FlaskClient,
+    order: str,
+) -> None:
+    report = assert_api_success(
+        test_client.get(
+            "/example/api/commodity_report",
+            query_string={
+                "base": "USD",
+                "quote": "EUR",
+                "sort": "price",
+                "order": order,
+            },
+        )
+    )
+    prices = [float(point[1]) for point in report["prices"]]
+    assert prices == sorted(prices, reverse=order == "desc")
+
+
+def test_api_commodity_report_samples_large_price_chart(
+    test_client: FlaskClient,
+    get_ledger: GetFavaLedger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = get_ledger("example")
+    pair = ledger.commodity_pairs()[0]
+    prices = tuple(
+        (
+            datetime.date(2000, 1, 1) + datetime.timedelta(days=index),
+            Decimal(index + 1),
+        )
+        for index in range(2001)
+    )
+    ledger._report_view_caches.clear()
+    monkeypatch.setattr(
+        FilteredLedger,
+        "prices",
+        lambda _filtered, _base, _quote: prices,
+    )
+    try:
+        report = assert_api_success(
+            test_client.get(
+                "/example/api/commodity_report",
+                query_string={
+                    "base": pair[0],
+                    "quote": pair[1],
+                    "per_page": 1,
+                },
+            )
+        )
+        assert report["total_entries"] == 2001
+        assert report["chart_prices_sampled"] is True
+        assert report["chart_total_prices"] == 2001
+        assert len(report["chart_prices"]) == 2000
+        assert report["chart_prices"][0][0] == "2000-01-01"
+        assert report["chart_prices"][-1][0] == "2005-06-23"
+    finally:
+        ledger._report_view_caches.clear()
+
+
+def test_api_events_page_rejects_bad_page_size(
+    test_client: FlaskClient,
+) -> None:
+    response = test_client.get("/long-example/api/events_page?per_page=501")
+    assert_api_error(
+        response,
+        "Invalid API request: per_page must be between 1 and 500",
+        status=HTTPStatus.BAD_REQUEST,
+    )
+
+
+def test_api_commodity_report_pages_selected_pair(
+    test_client: FlaskClient,
+) -> None:
+    first = assert_api_success(
+        test_client.get(
+            "/example/api/commodity_report",
+            query_string={
+                "base": "USD",
+                "quote": "EUR",
+                "page": 1,
+                "per_page": 1,
+                "sort": "date",
+                "order": "asc",
+            },
+        )
+    )
+    second = assert_api_success(
+        test_client.get(
+            "/example/api/commodity_report",
+            query_string={
+                "base": "USD",
+                "quote": "EUR",
+                "page": 2,
+                "per_page": 1,
+                "sort": "date",
+                "order": "asc",
+            },
+        )
+    )
+    assert first["base"] == "USD"
+    assert first["quote"] == "EUR"
+    assert first["total_entries"] == 2
+    assert first["pairs"] == [{"base": "USD", "quote": "EUR", "count": 2}]
+    assert len(first["prices"]) == len(second["prices"]) == 1
+    assert first["prices"][0][0] < second["prices"][0][0]
+    assert len(first["chart_prices"]) == 2
+    assert first["chart_total_prices"] == 2
+
+
+def test_api_commodity_report_defaults_to_first_visible_pair(
+    test_client: FlaskClient,
+) -> None:
+    report = assert_api_success(
+        test_client.get("/example/api/commodity_report")
+    )
+    first_pair = report["pairs"][0]
+    assert (report["base"], report["quote"]) == (
+        first_pair["base"],
+        first_pair["quote"],
+    )
+
+
+def test_api_commodity_report_validates_pair(
+    test_client: FlaskClient,
+) -> None:
+    response = test_client.get(
+        "/example/api/commodity_report?base=UNKNOWN&quote=OTHER"
+    )
+    assert_api_error(
+        response,
+        "Invalid API request: unknown commodity pair: UNKNOWN/OTHER",
+        status=HTTPStatus.BAD_REQUEST,
+    )
+
+
 def test_api_journal_page_not_found(
     test_client: FlaskClient,
 ) -> None:
@@ -1000,6 +1522,258 @@ def test_api_journal_page_invalid_page(
         "Invalid API request: Expected `int`, got `str` - at `$.page`",
         status=HTTPStatus.BAD_REQUEST,
     )
+
+
+def test_api_journal_page_slices_and_filters(
+    test_client: FlaskClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = test_client.get(
+        "/long-example/api/journal_page",
+        query_string={
+            "page": 1,
+            "order": "asc",
+            "sort": "narration",
+            "show": "transaction,cleared,pending,other",
+            "per_page": 2,
+        },
+    )
+    data = assert_api_success(response)
+    assert isinstance(data, dict)
+    assert data["page"] == 1
+    assert data["page_size"] == 2
+    assert data["total_entries"] >= 2
+    assert data["total_pages"] == (data["total_entries"] + 1) // 2
+    assert data["journal"].count("<li class='transaction") == 2
+
+    def fail_if_view_is_recomputed(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError
+
+    monkeypatch.setattr(
+        "fava.json_api._journal_sort_value", fail_if_view_is_recomputed
+    )
+
+    cached = assert_api_success(
+        test_client.get(
+            "/long-example/api/journal_page",
+            query_string={
+                "page": 1,
+                "order": "asc",
+                "sort": "narration",
+                "show": "transaction,cleared,pending,other",
+                "per_page": 2,
+            },
+        )
+    )
+    assert cached == data
+
+    empty = assert_api_success(
+        test_client.get(
+            "/long-example/api/journal_page",
+            query_string={"page": 1, "show": ""},
+        )
+    )
+    assert isinstance(empty, dict)
+    assert empty["total_entries"] == 0
+    assert empty["total_pages"] == 1
+    assert empty["journal"] == ""
+
+    cached_empty = assert_api_success(
+        test_client.get(
+            "/long-example/api/journal_page",
+            query_string={"page": 1, "show": ""},
+        )
+    )
+    assert cached_empty == empty
+
+
+@pytest.mark.parametrize("sort", ["flag", "narration", "change"])
+def test_api_journal_page_sorts_visible_columns(
+    test_client: FlaskClient, sort: str
+) -> None:
+    data = assert_api_success(
+        test_client.get(
+            "/example/api/journal_page",
+            query_string={
+                "page": 1,
+                "sort": sort,
+                "order": "asc",
+                "show": (
+                    "transaction,cleared,pending,other,close,open,custom,"
+                    "document,note,balance,budget,query,pad,statement"
+                ),
+                "per_page": 100,
+            },
+        )
+    )
+    assert isinstance(data, dict)
+    assert data["total_entries"] > 0
+    assert data["journal"]
+
+
+def test_api_custom_journal_sort_uses_custom_type(
+    test_client: FlaskClient,
+) -> None:
+    data = assert_api_success(
+        test_client.get(
+            "/example/api/journal_page",
+            query_string={
+                "page": 1,
+                "sort": "narration",
+                "order": "asc",
+                "show": "custom,budget",
+                "per_page": 100,
+            },
+        )
+    )
+    assert isinstance(data, dict)
+    assert data["journal"].index("<strong>budget</strong>") < data[
+        "journal"
+    ].index("<strong>type</strong>")
+
+
+def test_api_journal_page_filters_entry_subtypes(
+    test_client: FlaskClient,
+) -> None:
+    cleared = assert_api_success(
+        test_client.get(
+            "/example/api/journal_page",
+            query_string={
+                "page": 1,
+                "show": "transaction,cleared,metadata,postings",
+                "per_page": 100,
+            },
+        )
+    )
+    assert isinstance(cleared, dict)
+    assert cleared["total_entries"] > 0
+    assert "Payee" in cleared["journal"]
+    assert "transaction ! pending" not in cleared["journal"]
+
+    spaced_filters = assert_api_success(
+        test_client.get(
+            "/example/api/journal_page",
+            query_string={
+                "page": 1,
+                "show": " transaction , cleared , metadata , postings ",
+                "per_page": 100,
+            },
+        )
+    )
+    assert isinstance(spaced_filters, dict)
+    assert spaced_filters["total_entries"] == cleared["total_entries"]
+
+    budgets = assert_api_success(
+        test_client.get(
+            "/example/api/journal_page",
+            query_string={"page": 1, "show": "custom,budget", "per_page": 100},
+        )
+    )
+    assert isinstance(budgets, dict)
+    assert budgets["total_entries"] == 2
+    assert "budget" in budgets["journal"]
+
+    discovered = assert_api_success(
+        test_client.get(
+            "/example/api/journal_page",
+            query_string={
+                "page": 1,
+                "show": "document,discovered",
+                "per_page": 100,
+            },
+        )
+    )
+    assert isinstance(discovered, dict)
+    assert discovered["total_entries"] == 3
+    assert "receipt.pdf" in discovered["journal"]
+
+
+@pytest.mark.parametrize(
+    ("query", "detail"),
+    [
+        ({"page": 0}, "page must be at least 1"),
+        (
+            {"sort": "unknown"},
+            "sort must be one of change, date, flag, narration",
+        ),
+        ({"per_page": 1001}, "per_page must be between 1 and 1000"),
+        ({"order": "sideways"}, "order must be 'asc' or 'desc'"),
+        (
+            {"show": "transaction,invalid"},
+            "unknown journal entry type(s): invalid",
+        ),
+    ],
+)
+def test_api_journal_page_rejects_invalid_options(
+    test_client: FlaskClient,
+    query: dict[str, object],
+    detail: str,
+) -> None:
+    response = test_client.get(
+        "/long-example/api/journal_page",
+        query_string={"page": 1, **query},
+    )
+    assert_api_error(
+        response,
+        f"Invalid API request: {detail}",
+        status=HTTPStatus.BAD_REQUEST,
+    )
+
+
+def test_api_account_journal_pages_preserve_running_balances(
+    test_client: FlaskClient,
+) -> None:
+    query = {"a": "Assets:US:ETrade:Cash"}
+    full = assert_api_success(
+        test_client.get("/long-example/api/account_report", query_string=query)
+    )
+    assert isinstance(full, dict)
+    paged = []
+    page = 1
+    while True:
+        data = assert_api_success(
+            test_client.get(
+                "/long-example/api/journal_page",
+                query_string={**query, "page": page, "per_page": 1},
+            )
+        )
+        assert isinstance(data, dict)
+        paged.append(data["journal"])
+        if page == data["total_pages"]:
+            break
+        page += 1
+
+    assert "journal" in full
+    assert "".join(paged) == full["journal"]
+
+    changed = assert_api_success(
+        test_client.get(
+            "/long-example/api/journal_page",
+            query_string={
+                **query,
+                "page": 1,
+                "sort": "change",
+                "per_page": 100,
+            },
+        )
+    )
+    assert isinstance(changed, dict)
+    assert changed["total_entries"] > 0
+    assert changed["journal"]
+
+
+def test_api_account_report_can_skip_journal(
+    test_client: FlaskClient,
+) -> None:
+    data = assert_api_success(
+        test_client.get(
+            "/long-example/api/account_report",
+            query_string={"a": "Assets:Cash", "include_journal": "false"},
+        )
+    )
+    assert isinstance(data, dict)
+    assert data["journal"] == ""
+    assert data["charts"]
 
 
 def test_api_account_report_empty(

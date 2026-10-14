@@ -13,9 +13,9 @@
 
   let {
     account,
+    filters,
     report_type,
     charts,
-    journal,
     interval_balances,
     dates,
     budgets,
@@ -77,12 +77,8 @@
       {/if}
     </h3>
   </div>
-  {#if report_type === "journal" && journal != null}
-    <JournalTable
-      {journal}
-      initial_sort={["date", "desc"]}
-      show_change_and_balance={true}
-    />
+  {#if report_type === "journal"}
+    <JournalTable {filters} {account} show_change_and_balance={true} />
   {:else if interval_balances && is_non_empty(interval_balances) && budgets && dates}
     <IntervalTreeTable
       trees={interval_balances}

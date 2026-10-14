@@ -1,6 +1,6 @@
 import { account_hierarchy_validator } from "../charts/hierarchy.ts";
 import { charts_validator } from "../charts/index.ts";
-import { entryValidator } from "../entries/index.ts";
+import { Document, Event, entryValidator } from "../entries/index.ts";
 import { FiscalYearEnd } from "../lib/interval.ts";
 import type { ValidationT } from "../lib/validation.ts";
 import {
@@ -192,6 +192,71 @@ export const account_report_validator = object({
   interval_balances: optional(array(account_hierarchy_validator)),
   budgets: optional(record(array(account_budget))),
 });
+
+export interface JournalPage {
+  journal: string;
+  page: number;
+  page_size: number;
+  revision: string;
+  total_entries: number;
+  total_pages: number;
+}
+
+export const journal_page_validator = object<JournalPage>({
+  journal: string,
+  page: number,
+  page_size: number,
+  revision: string,
+  total_entries: number,
+  total_pages: number,
+});
+
+/** Bounded document report data for a single page. */
+export const documents_page_validator = object({
+  documents: array(Document.validator),
+  page: number,
+  page_size: number,
+  total_entries: number,
+  total_pages: number,
+  revision: string,
+  accounts: optional(array(object({ account: string, count: number }))),
+});
+export type DocumentsPage = ValidationT<typeof documents_page_validator>;
+
+/** Bounded event report data for a single page and its globally filtered chart. */
+export const events_page_validator = object({
+  events: array(Event.validator),
+  page: number,
+  page_size: number,
+  total_entries: number,
+  total_pages: number,
+  revision: string,
+  types: optional(array(object({ type: string, count: number }))),
+  chart_events: optional(array(Event.validator)),
+  chart_events_sampled: optional(boolean),
+  chart_total_events: optional(number),
+  total_events: optional(number),
+});
+export type EventsPage = ValidationT<typeof events_page_validator>;
+
+/** Bounded price history for a selected commodity pair. */
+export const commodity_report_validator = object({
+  pairs: optional(
+    array(object({ base: string, quote: string, count: number })),
+  ),
+  base: string,
+  quote: string,
+  prices: array(tuple(date, decimal)),
+  chart_prices: optional(array(tuple(date, decimal))),
+  chart_prices_sampled: optional(boolean),
+  chart_total_prices: optional(number),
+  page: number,
+  page_size: number,
+  total_entries: number,
+  total_pages: number,
+  revision: string,
+});
+export type CommodityReport = ValidationT<typeof commodity_report_validator>;
 
 export const statistics_validator = object({
   all_balance_directives: string,

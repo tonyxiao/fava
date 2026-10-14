@@ -10,14 +10,7 @@ import {
 import type { NonEmptyArray } from "../lib/array.ts";
 import { fetch_json } from "../lib/fetch.ts";
 import type { Validator } from "../lib/validation.ts";
-import {
-  array,
-  boolean,
-  number,
-  object,
-  string,
-  tuple,
-} from "../lib/validation.ts";
+import { array, boolean, object, string, tuple } from "../lib/validation.ts";
 import { notify, notify_err } from "../notifications.ts";
 import { query_validator } from "../reports/query/query_table.ts";
 import { router } from "../router.ts";
@@ -25,10 +18,17 @@ import { base_url } from "../stores/index.ts";
 import { set_mtime } from "../stores/mtime.ts";
 import {
   account_report_validator,
+  type CommodityReport,
   commodities_validator,
+  commodity_report_validator,
   context_validator,
+  type DocumentsPage,
+  documents_page_validator,
+  type EventsPage,
   error_validator,
+  events_page_validator,
   importable_files_validator,
+  journal_page_validator,
   ledgerDataValidator,
   options_validator,
   type SourceFile,
@@ -55,10 +55,13 @@ type GetEndpoint =
   | "account_report"
   | "changed"
   | "commodities"
+  | "commodity_report"
   | "context"
   | "documents"
+  | "documents_page"
   | "errors"
   | "events"
+  | "events_page"
   | "extract"
   | "help"
   | "imports"
@@ -94,6 +97,11 @@ type ApiParams = Partial<{
   filename: string;
   filter: string;
   importer: string;
+  include_journal: boolean;
+  include_overview: boolean;
+  base: string;
+  quote: string;
+  event_type: string;
   interval: string;
   narration: string;
   order: "asc" | "desc";
@@ -102,8 +110,20 @@ type ApiParams = Partial<{
   payee: string;
   query_string: string;
   r: string;
+  per_page: number;
   sha256sum: string;
+  show: string;
+  sort:
+    | "date"
+    | "flag"
+    | "narration"
+    | "change"
+    | "name"
+    | "description"
+    | "type"
+    | "price";
   time: string;
+  signal: AbortSignal;
 }>;
 type ApiParam = keyof ApiParams;
 
@@ -123,8 +143,13 @@ function api_url(
   if (accepted_params && params) {
     for (const key of accepted_params) {
       const value = params[key];
-      if (value != null && value !== "") {
-        url.searchParams.set(key, value.toString());
+      if (
+        (typeof value === "string" ||
+          typeof value === "number" ||
+          typeof value === "boolean") &&
+        (value !== "" || key === "show")
+      ) {
+        url.searchParams.set(key, String(value));
       }
     }
   }
@@ -152,10 +177,16 @@ function define_endpoint<T extends readonly ApiParam[], R>(
   validator: Validator<R>,
   accepted_params: T,
   method: "DELETE" | "GET" | "PUT" = "GET",
-): (params: Pick<ApiParams, T[number]>) => Promise<R> {
+): (
+  params: Pick<ApiParams, T[number]> & { signal?: AbortSignal },
+) => Promise<R> {
   return async (params) => {
     const url = api_url(endpoint, accepted_params, params);
-    return fetch_and_handle_api_call(url, { method }, validator);
+    const init: RequestInit = { method };
+    if (params.signal) {
+      init.signal = params.signal;
+    }
+    return fetch_and_handle_api_call(url, init, validator);
   };
 }
 
@@ -233,7 +264,7 @@ const filters_conversion_interval = [
 export const get_account_report = define_endpoint(
   "account_report",
   account_report_validator,
-  [...filters_conversion_interval, "a", "r"],
+  [...filters_conversion_interval, "a", "r", "include_journal"],
 );
 export const get_balance_sheet = define_endpoint(
   "balance_sheet",
@@ -254,6 +285,38 @@ export const get_documents = define_endpoint(
   array(Document.validator),
   filters,
 );
+export interface DocumentsPageParams {
+  account?: string;
+  filter?: string;
+  time?: string;
+  a?: string;
+  page: number;
+  per_page: number;
+  sort: "date" | "name";
+  order: "asc" | "desc";
+  include_overview: boolean;
+  signal?: AbortSignal;
+}
+const get_documents_page_raw = define_endpoint(
+  "documents_page",
+  documents_page_validator,
+  [
+    "account",
+    "filter",
+    "time",
+    "a",
+    "page",
+    "per_page",
+    "sort",
+    "order",
+    "include_overview",
+  ],
+);
+export async function get_documents_page(
+  params: DocumentsPageParams,
+): Promise<DocumentsPage> {
+  return get_documents_page_raw(params);
+}
 export const get_errors = define_paramless_endpoint(
   "errors",
   array(error_validator),
@@ -263,6 +326,72 @@ export const get_events = define_endpoint(
   array(Event.validator),
   filters,
 );
+export interface EventsPageParams {
+  account?: string;
+  filter?: string;
+  time?: string;
+  page: number;
+  per_page: number;
+  sort: "date" | "description" | "type";
+  order: "asc" | "desc";
+  event_type?: string;
+  include_overview: boolean;
+  signal?: AbortSignal;
+}
+const get_events_page_raw = define_endpoint(
+  "events_page",
+  events_page_validator,
+  [
+    "account",
+    "filter",
+    "time",
+    "page",
+    "per_page",
+    "sort",
+    "order",
+    "event_type",
+    "include_overview",
+  ],
+);
+export async function get_events_page(
+  params: EventsPageParams,
+): Promise<EventsPage> {
+  return get_events_page_raw(params);
+}
+export interface CommodityReportParams {
+  account?: string;
+  filter?: string;
+  time?: string;
+  base?: string;
+  quote?: string;
+  page: number;
+  per_page: number;
+  sort: "date" | "price";
+  order: "asc" | "desc";
+  include_overview: boolean;
+  signal?: AbortSignal;
+}
+const get_commodity_report_raw = define_endpoint(
+  "commodity_report",
+  commodity_report_validator,
+  [
+    "account",
+    "filter",
+    "time",
+    "base",
+    "quote",
+    "page",
+    "per_page",
+    "sort",
+    "order",
+    "include_overview",
+  ],
+);
+export async function get_commodity_report(
+  params: CommodityReportParams,
+): Promise<CommodityReport> {
+  return get_commodity_report_raw(params);
+}
 export const get_extract = define_endpoint("extract", array(entryValidator), [
   "filename",
   "importer",
@@ -283,8 +412,16 @@ export const get_income_statement = define_endpoint(
 );
 export const get_journal_page = define_endpoint(
   "journal_page",
-  object({ journal: string, total_pages: number }),
-  [...filters_conversion_interval, "page", "order"],
+  journal_page_validator,
+  [
+    ...filters_conversion_interval,
+    "page",
+    "order",
+    "sort",
+    "show",
+    "per_page",
+    "a",
+  ],
 );
 export const get_ledger_data = define_paramless_endpoint(
   "ledger_data",

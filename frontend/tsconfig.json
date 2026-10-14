@@ -20,6 +20,7 @@
     "src/**/*.ts",
     "src/**/*.svelte",
     "test/**/*.ts",
+    "test/**/*.svelte",
     "*.cjs",
     "*.js"
   ]

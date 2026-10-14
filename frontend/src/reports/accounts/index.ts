@@ -4,8 +4,8 @@ import type { AccountTreeNode } from "../../charts/hierarchy.ts";
 import type { ParsedFavaChart } from "../../charts/index.ts";
 import type { NonRelativeUrlPathError } from "../../helpers.ts";
 import { get_url_path } from "../../helpers.ts";
-import { fragment_from_string } from "../../lib/dom.ts";
 import { err, ok, type Result } from "../../lib/result.ts";
+import type { FiltersConversionInterval } from "../../stores/filters.ts";
 import { get_url_filters } from "../../stores/filters.ts";
 import { Route } from "../route.ts";
 import AccountReport from "./AccountReport.svelte";
@@ -17,9 +17,9 @@ const to_report_type = (s: string | null): AccountReportType =>
 
 export interface AccountReportProps {
   account: string;
+  filters: FiltersConversionInterval;
   report_type: AccountReportType;
   charts: ParsedFavaChart[];
-  journal: DocumentFragment | null;
   interval_balances: AccountTreeNode[] | null;
   dates: { begin: Date; end: Date }[] | null;
   budgets: Record<string, AccountBudget[]> | null;
@@ -52,16 +52,17 @@ export const account_report = new Route<AccountReportProps>(
   async (url) => {
     const account = get_account_from_url(url).unwrap();
     const report_type = to_report_type(url.searchParams.get("r"));
-    const { charts, journal, interval_balances, dates, budgets } =
+    const { charts, interval_balances, dates, budgets } =
       await get_account_report({
         ...get_url_filters(url),
         a: account,
         r: report_type,
+        include_journal: false,
       });
 
     return {
       charts,
-      journal: journal != null ? fragment_from_string(journal) : null,
+      filters: get_url_filters(url),
       interval_balances,
       dates,
       budgets,

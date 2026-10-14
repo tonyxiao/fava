@@ -48,6 +48,68 @@ def test_filtered_ledger(
     assert not year_2012.account_is_closed(unclosed_acc)
 
 
+def test_filtered_ledger_pins_revision(
+    small_example_ledger: FavaLedger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filtered = small_example_ledger.get_filtered()
+    revision = filtered.revision
+    monkeypatch.setattr(
+        small_example_ledger.watcher, "last_checked", revision + 1
+    )
+    assert filtered.revision == revision
+    assert filtered.revision != small_example_ledger.mtime
+
+
+def test_account_journal_cache_is_bounded_and_scoped(
+    small_example_ledger: FavaLedger,
+) -> None:
+    ledger = small_example_ledger
+    all_entries = ledger.get_filtered()
+    december = ledger.get_filtered(time="2012-12")
+    food = ledger.get_filtered(account="Expenses:Food")
+
+    all_rows = ledger.account_journal(
+        all_entries, "Assets:Account1", "at_cost", with_children=False
+    )
+    assert (
+        ledger.account_journal(
+            all_entries, "Assets:Account1", "at_cost", with_children=False
+        )
+        is all_rows
+    )
+    december_rows = ledger.account_journal(
+        december, "Assets:Account1", "at_cost", with_children=False
+    )
+    ledger.account_journal(
+        food, "Assets:Account1", "at_cost", with_children=False
+    )
+
+    assert all_rows is not december_rows
+    assert len(ledger._account_journal_cache) == 2
+
+    # The oldest scope was evicted; recomputing it must still return its own
+    # rows rather than a result cached for either newer filter.
+    assert (
+        ledger.account_journal(
+            all_entries, "Assets:Account1", "at_cost", with_children=False
+        )
+        == all_rows
+    )
+    assert len(ledger._account_journal_cache) == 2
+
+    ledger._journal_view_cache["test"] = ("test", ())
+    ledger.set_report_view_cache("documents", "first", ("first", ()))
+    ledger.set_report_view_cache("documents", "second", ("second", ()))
+    ledger.set_report_view_cache("documents", "third", ("third", ()))
+    assert len(ledger._report_view_caches["documents"]) == 2
+    assert ledger.get_report_view_cache("documents", "first") is None
+    ledger.load_file()
+    assert not ledger._account_journal_cache
+    assert not ledger._journal_view_cache
+    assert not ledger._report_view_caches
+
+
 def test_ledger_get_entry(
     small_example_ledger: FavaLedger,
 ) -> None:
@@ -142,6 +204,9 @@ def test_paginate_journal(small_example_ledger: FavaLedger) -> None:
     assert first_page
     assert not first_page.entries
     assert first_page.total_pages == 1
+    assert empty.paginate_journal(0) is None
+    assert empty.paginate_journal(1, per_page=0) is None
+    assert empty.paginate_journal(2) is None
 
     filtered = FilteredLedger(small_example_ledger)
     total_entries = len(filtered.entries_without_prices)
@@ -163,6 +228,13 @@ def test_paginate_journal(small_example_ledger: FavaLedger) -> None:
         all_entries.extend(
             [id(entry_tuple[1]) for entry_tuple in journal_page.entries]
         )
+
+    asc_page = filtered.paginate_journal(1, per_page, order="asc")
+    assert asc_page
+    assert asc_page.entries[0][0] == 0
+    assert (
+        filtered.paginate_journal(expected_total_pages + 1, per_page) is None
+    )
 
     assert len(set(all_indices)) == total_entries
     assert all(0 <= idx < total_entries for idx in all_indices)
