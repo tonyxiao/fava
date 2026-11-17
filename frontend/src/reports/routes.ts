@@ -12,6 +12,7 @@ import { options } from "./options/index.ts";
 import { query } from "./query/index.ts";
 import type { FrontendRoute } from "./route.ts";
 import { statistics } from "./statistics/index.ts";
+import { transactions } from "./transactions/index.ts";
 import {
   balance_sheet,
   income_statement,
@@ -43,4 +44,5 @@ export const frontend_routes: FrontendRoute[] = [
   query,
   statistics,
   trial_balance,
+  transactions,
 ];

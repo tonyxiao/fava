@@ -1656,3 +1656,17 @@ def get_statistics() -> Statistics:
         balances=balances,
         entries_by_type=entries_by_type,
     )
+
+
+@api_endpoint
+def get_experimental_transactions(
+    page: int = 1,
+    per_page: int = 50,
+    sort: str = "date",
+    order: str = "desc",
+    show: str = "cleared,pending",
+) -> object:
+    """Serve the isolated experimental transactions report."""
+    from fava.experimental_transactions import transactions_page
+
+    return transactions_page(page, per_page, sort, order, show)
