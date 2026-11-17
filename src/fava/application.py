@@ -78,6 +78,7 @@ CLIENT_SIDE_REPORTS = [
     "holdings",
     "import",
     "journal",
+    "transactions",
     "income_statement",
     "options",
     "query",
